@@ -436,16 +436,7 @@ def find_project_files(directory):
     
     return file_list
 
-def convert_to_html(markdown_content):
-    """
-    A very basic Markdown to HTML converter.
-    """
-    html_content = "<html><head><title>Documentation</title></head><body>"
-    html_content += markdown_content.replace("\n# ", "<h1>").replace("`", "")
-    html_content += "</body></html>"
-    return html_content
-
-def write_documentation_to_file(filename, output_format):
+def write_documentation_to_file(filename, output_path):
     """
     Writes the generated documentation content to a file in the specified format.
     """
@@ -455,18 +446,15 @@ def write_documentation_to_file(filename, output_format):
         print("No content to write. Documentation was not generated.")
         return
 
-    content_to_write = ""
-    if output_format == 'markdown':
-        content_to_write = documentation_content
-    elif output_format == 'html':
-        content_to_write = convert_to_html(documentation_content)
+    full_path = os.path.join(output_path, filename)
     
     try:
-        with open(filename, 'w', encoding='utf8') as f:
-            f.write(content_to_write)
-        print(f"Documentation successfully generated and saved to `{filename}`")
+        os.makedirs(output_path, exist_ok=True)
+        with open(full_path, 'w', encoding='utf8') as f:
+            f.write(documentation_content)
+        print(f"Documentation successfully generated and saved to `{full_path}`")
     except Exception as e:
-        print(f"Error writing to file {filename}: {e}")
+        print(f"Error writing to file {full_path}: {e}")
 
 def main_menu():
     """
@@ -508,17 +496,14 @@ def main_menu():
                 elif file_path.endswith('.js'):
                     analyze_javascript_file(file_path, client)
             
-            output_format = input("Choose output format (markdown/html): ").lower()
-            if output_format not in ['markdown', 'html']:
-                print("Invalid format. Defaulting to markdown.")
-                output_format = 'markdown'
-            
-            filename = input(f"Enter a filename (e.g., {os.path.basename(project_directory)}_docs.{'md' if output_format == 'markdown' else 'html'}): ")
-            if not filename:
-                filename = f"{os.path.basename(project_directory)}_docs.{'md' if output_format == 'markdown' else 'html'}"
+            # New logic for output path and file name
+            documentation_base_dir = "Documentation"
+            project_name = os.path.basename(os.path.normpath(project_directory))
+            output_path = os.path.join(documentation_base_dir, project_name)
+            output_filename = "README.md"
 
             print("-" * 40)
-            write_documentation_to_file(filename, output_format)
+            write_documentation_to_file(output_filename, output_path)
             print("-" * 40)
             
         elif choice == '2':
