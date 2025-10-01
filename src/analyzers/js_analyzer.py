@@ -1,0 +1,163 @@
+# src/analyzers/js_analyzer.py
+
+import esprima
+import re
+import os
+from google import genai
+
+class JavaScriptAnalyzer:
+    def __init__(self, client):
+        self.client = client
+
+    def analyze(self, file_path):
+        """
+        Parses a JavaScript file and returns a structured representation of its documentation.
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                source_code = f.read()
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            return None
+
+        try:
+            tree = esprima.parse(source_code, {'loc': True, 'range': True, 'attachComment': True})
+        except esprima.Error as e:
+            print(f"Error parsing JavaScript file {file_path}: {e}")
+            return None
+
+        doc_data = {
+            'file_name': os.path.basename(file_path),
+            'functions': [],
+            'classes': []
+        }
+
+        for node in tree.body:
+            if node.type == 'ClassDeclaration':
+                doc_data['classes'].append(self._process_class(node, source_code))
+            elif node.type == 'FunctionDeclaration':
+                doc_data['functions'].append(self._process_function(node, source_code))
+            elif node.type == 'VariableDeclaration':
+                for declaration in node.declarations:
+                    if declaration.init and (declaration.init.type == 'FunctionExpression' or declaration.init.type == 'ArrowFunctionExpression'):
+                        doc_data['functions'].append(self._process_function(declaration.init, source_code, declaration.id.name))
+        return doc_data
+
+    def _process_class(self, node, source_code):
+        docstring = self._find_docstring(node, source_code)
+        parsed_args, parsed_returns, brief_desc = self._parse_docstring(docstring)
+        
+        methods = []
+        for method in node.body.body:
+            if method.type == 'MethodDefinition':
+                methods.append(self._process_method(method, source_code))
+        
+        return {
+            'name': node.id.name,
+            'docstring': docstring,
+            'description': brief_desc,
+            'methods': methods
+        }
+    
+    def _process_method(self, node, source_code):
+        docstring = self._find_docstring(node, source_code)
+        parsed_args, parsed_returns, brief_desc = self._parse_docstring(docstring)
+
+        method_name = node.key.name
+        method_params = []
+        if node.value and node.value.params:
+            for param in node.value.params:
+                if param.type == 'Identifier':
+                    method_params.append(param.name)
+                elif hasattr(param, 'range'):
+                    method_params.append(source_code[param.range[0]:param.range[1]])
+        
+        return {
+            'name': method_name,
+            'docstring': docstring,
+            'description': brief_desc,
+            'params': method_params,
+            'parsed_args': parsed_args,
+            'parsed_returns': parsed_returns
+        }
+
+    def _process_function(self, node, source_code, name=None):
+        docstring = self._find_docstring(node, source_code)
+        parsed_args, parsed_returns, brief_desc = self._parse_docstring(docstring)
+        
+        func_name = name or (node.id.name if hasattr(node.id, 'name') else 'anonymous')
+        func_params = []
+        if node.params:
+            for param in node.params:
+                if param.type == 'Identifier':
+                    func_params.append(param.name)
+                elif hasattr(param, 'range'):
+                    func_params.append(source_code[param.range[0]:param.range[1]])
+        
+        return {
+            'name': func_name,
+            'docstring': docstring,
+            'description': brief_desc,
+            'params': func_params,
+            'parsed_args': parsed_args,
+            'parsed_returns': parsed_returns
+        }
+
+    def _find_docstring(self, node, source_code):
+        """Finds or generates a JSDoc comment for a JavaScript node."""
+        if hasattr(node, 'leadingComments') and node.leadingComments:
+            for comment in reversed(node.leadingComments):
+                if comment.type == 'Block' and comment.value.strip().startswith('*'):
+                    return f"/**{comment.value}*/"
+        
+        node_name = node.id.name if hasattr(node.id, 'name') else 'anonymous'
+        print(f"  - Generating JSDoc for `{node_name}`...")
+        if hasattr(node, 'range'):
+            code_snippet = source_code[node.range[0]:node.range[1]]
+            docstring = self.client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=f"Generate a JSDoc comment for this code:\n```javascript\n{code_snippet}\n```"
+            ).text.strip()
+            if not docstring.startswith('/**'):
+                docstring = f"/**\n * {docstring}\n */"
+            return docstring
+        return ""
+
+    def _parse_docstring(self, docstring):
+        """Parses a JSDoc comment for params and returns."""
+        if not docstring:
+            return {}, {}, ""
+        
+        args = {}
+        returns = {}
+        description = ""
+        
+        # Strip all leading/trailing whitespace and the JSDoc comment block markers
+        clean_docstring = docstring.strip().replace('/**', '').replace('*/', '').strip()
+        
+        # Split the docstring into a description part and tag parts
+        parts = re.split(r'(@[a-zA-Z]+)', clean_docstring, maxsplit=1)
+        if parts:
+            description = parts[0].replace('*', '').strip()
+        
+        tags_raw = re.findall(r'@(\w+)\s+([\s\S]*?)(?=@|$)', clean_docstring)
+        
+        for tag, content in tags_raw:
+            tag = tag.lower().strip()
+            content = content.replace('*', '').strip()
+            
+            if tag == 'param':
+                param_match = re.match(r'(?:\{([^{}]+)\})?\s*(\[?\w+\]?)?(?:\s*-\s*([\s\S]*))?', content)
+                if param_match:
+                    param_type, param_name, param_desc = param_match.groups()
+                    param_name = param_name.strip('[]') if param_name else None
+                    param_desc = param_desc.strip() if param_desc else ""
+                    if param_name:
+                        args[param_name] = {'type': param_type.strip() if param_type else 'any', 'desc': param_desc}
+            elif tag == 'returns' or tag == 'return':
+                returns_match = re.match(r'(?:\{([^{}]+)\})?\s*([\s\S]*)', content)
+                if returns_match:
+                    return_type, return_desc = returns_match.groups()
+                    returns = {'type': return_type.strip() if return_type else 'any', 'desc': return_desc.strip() if return_desc else ""}
+            
+        return args, returns, description
