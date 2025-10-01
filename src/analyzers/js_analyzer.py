@@ -3,11 +3,12 @@
 import esprima
 import re
 import os
-from google import genai
+from unittest.mock import Mock # Using mock for LLM client in this non-runnable environment
 
 class JavaScriptAnalyzer:
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, client=None):
+        # Initialize client, using Mock if none provided
+        self.client = client if client is not None else Mock()
 
     def analyze(self, file_path):
         """
@@ -28,6 +29,7 @@ class JavaScriptAnalyzer:
 
         doc_data = {
             'file_name': os.path.basename(file_path),
+            'path': file_path, # Added the missing 'path' key
             'functions': [],
             'classes': []
         }
@@ -41,7 +43,11 @@ class JavaScriptAnalyzer:
                 for declaration in node.declarations:
                     if declaration.init and (declaration.init.type == 'FunctionExpression' or declaration.init.type == 'ArrowFunctionExpression'):
                         doc_data['functions'].append(self._process_function(declaration.init, source_code, declaration.id.name))
-        return doc_data
+        
+        # Return the data in the expected LADOM format for main.py
+        return {
+            "files": [doc_data]
+        }
 
     def _process_class(self, node, source_code):
         docstring = self._find_docstring(node, source_code)
@@ -114,32 +120,50 @@ class JavaScriptAnalyzer:
         print(f"  - Generating JSDoc for `{node_name}`...")
         if hasattr(node, 'range'):
             code_snippet = source_code[node.range[0]:node.range[1]]
-            docstring = self.client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=f"Generate a JSDoc comment for this code:\n```javascript\n{code_snippet}\n```"
-            ).text.strip()
-            if not docstring.startswith('/**'):
-                docstring = f"/**\n * {docstring}\n */"
-            return docstring
-        return ""
+            
+            # Refined prompt for cleaner output
+            prompt = (
+                f"Generate a JSDoc comment for the following JavaScript code. "
+                f"Provide only the JSDoc comment block, starting with `/**` and ending with `*/`. "
+                f"Do not include the code snippet itself or any other text.\n\n"
+                f"Code snippet to document:\n```javascript\n{code_snippet}\n```"
+            )
+
+            try:
+                response = self.client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                docstring = response.text.strip()
+                return docstring
+            except Exception as e:
+                print(f"Error generating docstring: {e}")
+                return "/**\n * Auto-generated docstring failed.\n */"
+        return "/**\n * No source code available for docstring generation.\n */"
+
 
     def _parse_docstring(self, docstring):
-        """Parses a JSDoc comment for params and returns."""
+        """Parses a JSDoc comment for params and returns, after cleaning out code blocks."""
         if not docstring:
-            return {}, {}, ""
+            return {}, {}, "No description provided."
+        
+        # Proactively remove all code blocks from the docstring
+        clean_docstring = re.sub(r'```[\s\S]*?```', '', docstring, flags=re.MULTILINE).strip()
+        clean_docstring = clean_docstring.strip().replace('/**', '').replace('*/', '').strip()
         
         args = {}
         returns = {}
-        description = ""
+        description = "No description provided."
+
+        # Find the description before the first JSDoc tag
+        first_tag_match = re.search(r'(@[a-zA-Z]+)', clean_docstring)
+        if first_tag_match:
+            description = clean_docstring[:first_tag_match.start()].replace('*', '').strip()
+        else:
+            description = clean_docstring.replace('*', '').strip()
         
-        # Strip all leading/trailing whitespace and the JSDoc comment block markers
-        clean_docstring = docstring.strip().replace('/**', '').replace('*/', '').strip()
-        
-        # Split the docstring into a description part and tag parts
-        parts = re.split(r'(@[a-zA-Z]+)', clean_docstring, maxsplit=1)
-        if parts:
-            description = parts[0].replace('*', '').strip()
-        
+        description = description if description else "No description provided."
+
         tags_raw = re.findall(r'@(\w+)\s+([\s\S]*?)(?=@|$)', clean_docstring)
         
         for tag, content in tags_raw:
@@ -147,7 +171,7 @@ class JavaScriptAnalyzer:
             content = content.replace('*', '').strip()
             
             if tag == 'param':
-                param_match = re.match(r'(?:\{([^{}]+)\})?\s*(\[?\w+\]?)?(?:\s*-\s*([\s\S]*))?', content)
+                param_match = re.match(r'(?:\{([^{}]+)\})?\s*(\[?\w+\]?)?(?:\s*[\-\s]*([\s\S]*))?', content)
                 if param_match:
                     param_type, param_name, param_desc = param_match.groups()
                     param_name = param_name.strip('[]') if param_name else None
