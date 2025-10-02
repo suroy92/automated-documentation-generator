@@ -10,6 +10,7 @@ import os
 from unittest.mock import Mock, MagicMock
 from src.analyzers.py_analyzer import PythonAnalyzer
 from src.analyzers.js_analyzer import JavaScriptAnalyzer
+from src.analyzers.java_analyzer import JavaAnalyzer
 
 
 class TestPythonAnalyzer:
@@ -240,6 +241,148 @@ const subtract = (a, b) => a - b;
         os.remove(path)
         assert result is None
 
+class TestJavaAnalyzer:
+    """Test cases for Java analyzer."""
+    
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock LLM client."""
+        client = Mock()
+        response = Mock()
+        response.text = """
+        Test class for demonstration.
+        @param name The name parameter
+        @return The result value
+        """
+        client.models.generate_content.return_value = response
+        return client
+    
+    @pytest.fixture
+    def temp_java_file(self):
+        """Create a temporary Java file."""
+        content = '''
+/**
+ * Calculator class for basic arithmetic operations.
+ */
+public class Calculator {
+    
+    /**
+     * Adds two numbers.
+     * @param a The first number
+     * @param b The second number
+     * @return The sum of a and b
+     */
+    public int add(int a, int b) {
+        return a + b;
+    }
+    
+    /**
+     * Multiplies two numbers.
+     * @param x The first number
+     * @param y The second number
+     * @return The product of x and y
+     */
+    public double multiply(double x, double y) {
+        return x * y;
+    }
+    
+    /**
+     * Constructor for Calculator.
+     * @param initialValue The initial value
+     */
+    public Calculator(int initialValue) {
+        // Constructor implementation
+    }
+}
+'''
+        fd, path = tempfile.mkstemp(suffix='.java')
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        yield path
+        os.remove(path)
+    
+    def test_analyze_java_file(self, mock_client, temp_java_file):
+        """Test analyzing a Java file."""
+        analyzer = JavaAnalyzer(client=mock_client)
+        result = analyzer.analyze(temp_java_file)
+        
+        assert result is not None
+        assert 'files' in result
+        assert len(result['files']) == 1
+        
+        file_data = result['files'][0]
+        assert 'classes' in file_data
+        assert len(file_data['classes']) == 1
+        
+        # Check class
+        cls = file_data['classes'][0]
+        assert cls['name'] == 'Calculator'
+        assert 'methods' in cls
+        assert len(cls['methods']) == 3  # 2 methods + 1 constructor
+    
+    def test_parse_javadoc(self, mock_client):
+        """Test parsing Javadoc comments."""
+        analyzer = JavaAnalyzer(client=mock_client)
+        
+        docstring = """
+        Calculates something important.
+        @param x The first parameter
+        @param y The second parameter
+        @return The calculated result
+        """
+        
+        args, returns, desc = analyzer._parse_javadoc(docstring)
+        
+        assert 'x' in args
+        assert 'y' in args
+        assert 'Calculates something' in desc
+        assert returns['description']
+    
+    def test_get_brief_description(self, mock_client):
+        """Test extracting brief description from Javadoc."""
+        analyzer = JavaAnalyzer(client=mock_client)
+        
+        docstring = """
+        * This is the first sentence. This is more detail.
+        * @param test A parameter
+        """
+        
+        brief = analyzer._get_brief_description(docstring)
+        assert 'first sentence' in brief.lower()
+    
+    def test_invalid_java_file(self, mock_client):
+        """Test handling of invalid Java syntax."""
+        fd, path = tempfile.mkstemp(suffix='.java')
+        with os.fdopen(fd, 'w') as f:
+            f.write("public class Invalid { syntax error here")
+        
+        analyzer = JavaAnalyzer(client=mock_client)
+        result = analyzer.analyze(path)
+        
+        os.remove(path)
+        assert result is None
+    
+    def test_java_without_javadoc(self, mock_client, temp_java_file):
+        """Test that LLM generation is triggered for missing Javadoc."""
+        # Create file without Javadoc
+        fd, path = tempfile.mkstemp(suffix='.java')
+        with os.fdopen(fd, 'w') as f:
+            f.write("""
+public class NoDoc {
+    public void method(String param) {
+        // No documentation
+    }
+}
+""")
+        
+        analyzer = JavaAnalyzer(client=mock_client)
+        result = analyzer.analyze(path)
+        
+        os.remove(path)
+        
+        # Should still parse successfully
+        assert result is not None
+        assert len(result['files'][0]['classes']) == 1
 
 class TestAnalyzerConsistency:
     """Test that both analyzers produce consistent LADOM structures."""

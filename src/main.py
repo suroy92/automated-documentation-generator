@@ -18,6 +18,7 @@ from .rate_limiter import RateLimiter
 from .path_validator import PathValidator
 from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
+from .analyzers.java_analyzer import JavaAnalyzer
 from .doc_generator import MarkdownGenerator, HTMLGenerator
 from .ladom_schema import LADOMValidator
 
@@ -98,7 +99,8 @@ def analyze_file(file_path: str, analyzer, file_type: str) -> tuple:
 
 def scan_and_analyze(project_path: str, config: ConfigLoader, 
                      py_analyzer: PythonAnalyzer, 
-                     js_analyzer: JavaScriptAnalyzer) -> dict:
+                     js_analyzer: JavaScriptAnalyzer,
+                     java_analyzer: JavaAnalyzer) -> dict:
     """
     Scan project directory and analyze all supported files.
     
@@ -281,11 +283,17 @@ def main():
         cache=cache,
         rate_limiter=rate_limiter
     )
+
+    java_analyzer = JavaAnalyzer(
+        client=genai_client,
+        cache=cache,
+        rate_limiter=rate_limiter
+    )
     
     # Scan and analyze project
     print(f"\nScanning project: {project_path}")
     aggregated_ladom = scan_and_analyze(
-        project_path, config, py_analyzer, js_analyzer
+        project_path, config, py_analyzer, js_analyzer, java_analyzer
     )
     
     if not aggregated_ladom or not aggregated_ladom.get('files'):
