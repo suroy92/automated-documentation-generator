@@ -28,10 +28,10 @@ output:
   
 # LLM Configuration
 llm:
-  model: gemini-2.5-flash
-  temperature: 0.3
-  max_retries: 3
-  timeout: 30
+  provider: ollama
+  model: qwen2.5-coder:7b
+  base_url: http://localhost:11434
+  temperature: 0.2
   rate_limit_calls_per_minute: 20
   
 # Cache configuration
@@ -48,7 +48,7 @@ logging:
 # Processing configuration
 processing:
   parallel: true
-  max_workers: 8
+  max_workers: 6
   
 # Security configuration
 security:

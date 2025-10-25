@@ -25,7 +25,7 @@ class BaseAnalyzer(ABC):
         Initialize the analyzer.
         
         Args:
-            client: LLM client for docstring generation
+            client: LLM client for docstring generation (must expose .generate(...))
             cache: Cache manager for storing generated docstrings
             rate_limiter: Rate limiter for API calls
         """
@@ -79,7 +79,7 @@ class BaseAnalyzer(ABC):
     def _generate_docstring_with_llm(self, code_snippet: str, 
                                      node_name: str = "unknown") -> str:
         """
-        Generate a docstring using LLM with caching and rate limiting.
+        Generate a docstring using the configured LLM with caching and rate limiting.
         
         Args:
             code_snippet: The code to document
@@ -104,19 +104,18 @@ class BaseAnalyzer(ABC):
             self.rate_limiter.wait_if_needed()
 
         # Generate docstring
-        logger.info(f"Generating docstring for `{node_name}` using LLM")
+        logger.info(f"Generating docstring for `{node_name}` using local LLM")
         try:
             prompt = self._create_docstring_prompt(code_snippet)
-            response = self.client.models.generate_content(
-                model="gemini-2.5-flash", 
-                contents=prompt
-            )
-            docstring = self._clean_llm_response(response.text.strip())
+            # Local provider contract: client.generate(system=..., prompt=..., temperature=...)
+            docstring = self.client.generate(
+                system="", prompt=prompt, temperature=0.2
+            ).strip()
 
             # Cache the result
-            if self.cache:
+            if self.cache and docstring:
                 self.cache.set(code_snippet, docstring, self.language)
-            return docstring
+            return self._clean_llm_response(docstring) if docstring else self._get_fallback_docstring()
 
         except Exception as e:
             logger.error(f"Failed to generate docstring for {node_name} using LLM: {e}")
