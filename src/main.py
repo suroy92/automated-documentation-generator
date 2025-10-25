@@ -8,7 +8,6 @@ import os
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from google import genai
 from dotenv import load_dotenv
 from tqdm import tqdm
 
@@ -21,8 +20,9 @@ from .analyzers.js_analyzer import JavaScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
 from .doc_generator import MarkdownGenerator, HTMLGenerator
 from .ladom_schema import LADOMValidator
+from .providers.ollama_client import LLM, LLMConfig
 
-# Load environment variables
+# Load environment variables (optional; not required for Ollama)
 load_dotenv()
 
 # Initialize logger
@@ -53,27 +53,26 @@ def setup_logging(config: ConfigLoader):
     logger.info("Logging initialized")
 
 
-def initialize_genai_client():
+def initialize_llm_client(config: ConfigLoader) -> LLM:
     """
-    Initialize the Gemini AI client.
-    
-    Returns:
-        Initialized client or None if API key not found
+    Initialize a local Ollama LLM client.
+    Reads model/base_url/temperature from config if present, else uses defaults.
     """
-    api_key = os.getenv('GEMINI_API_KEY')
-    
-    if not api_key:
-        logger.error("GEMINI_API_KEY not found in environment variables")
-        logger.error("Please set GEMINI_API_KEY in your .env file")
-        return None
-    
     try:
-        client = genai.Client(api_key=api_key)
-        logger.info("Gemini AI client initialized successfully")
-        return client
-    except Exception as e:
-        logger.error(f"Failed to initialize Gemini client: {e}")
-        return None
+        llm_cfg = getattr(config, "config", {}).get("llm", {}) if hasattr(config, "config") else {}
+    except Exception:
+        llm_cfg = {}
+    client = LLM(
+        LLMConfig(
+            base_url=llm_cfg.get("base_url", "http://localhost:11434"),
+            model=llm_cfg.get("model", "qwen2.5-coder:7b"),
+            temperature=float(llm_cfg.get("temperature", 0.2) or 0.2),
+            embedding_model=llm_cfg.get("embedding_model", "all-minilm:l6-v2"),
+            timeout_seconds=int(llm_cfg.get("timeout_seconds", 120) or 120),
+        )
+    )
+    logger.info("Ollama LLM client initialized (local)")
+    return client
 
 
 def analyze_file(file_path: str, analyzer, file_type: str) -> tuple:
@@ -130,6 +129,9 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
                 files_to_analyze.append((file_path, py_analyzer, 'Python'))
             elif file.endswith('.js'):
                 files_to_analyze.append((file_path, js_analyzer, 'JavaScript'))
+            # Note: Java analyzer exists but is optional to include here
+            # elif file.endswith('.java'):
+            #     files_to_analyze.append((file_path, java_analyzer, 'Java'))
     
     if not files_to_analyze:
         logger.warning("No supported files found in project")
@@ -226,7 +228,7 @@ def generate_documentation(aggregated_ladom: dict, config: ConfigLoader,
 def main():
     """Main entry point for the documentation generator."""
     print("=" * 60)
-    print("  Automated Documentation Generator")
+    print("  Automated Documentation Generator (Local – Ollama)")
     print("=" * 60)
     print()
     
@@ -252,14 +254,8 @@ def main():
         print(f"Error: Invalid project path or access denied")
         return
     
-    # Initialize Gemini client
-    genai_client = initialize_genai_client()
-    if not genai_client:
-        print("\nWarning: LLM client not initialized. Docstring generation will be limited.")
-        response = input("Continue without LLM support? (y/n): ").strip().lower()
-        if response != 'y':
-            logger.info("User cancelled operation")
-            return
+    # Initialize local LLM client (Ollama)
+    llm_client = initialize_llm_client(config)
     
     # Initialize cache and rate limiter
     cache = DocstringCache(
@@ -273,19 +269,19 @@ def main():
     
     # Initialize analyzers
     py_analyzer = PythonAnalyzer(
-        client=genai_client,
+        client=llm_client,
         cache=cache,
         rate_limiter=rate_limiter
     )
     
     js_analyzer = JavaScriptAnalyzer(
-        client=genai_client,
+        client=llm_client,
         cache=cache,
         rate_limiter=rate_limiter
     )
 
     java_analyzer = JavaAnalyzer(
-        client=genai_client,
+        client=llm_client,
         cache=cache,
         rate_limiter=rate_limiter
     )
