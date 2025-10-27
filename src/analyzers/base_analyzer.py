@@ -1,14 +1,24 @@
 # src/analyzers/base_analyzer.py
 
 """
-Base analyzer class for language-specific parsers.
-Provides common functionality and enforces interface consistency.
+Abstract base for language analyzers.
+
+Week 1 upgrades (patched):
+- Ask LLM for STRICT JSON (summary/params/returns/throws/examples/notes)
+- Normalize types from the LLM (coerce dict/list → string) BEFORE formatting
+- Minimal schema validation + safe fallbacks
+- Cache stores normalized JSON
+- Prompt tightened to avoid hallucinated libraries/types; empty fields allowed
 """
 
+from __future__ import annotations
 from abc import ABC, abstractmethod
+import hashlib
+import json
 import logging
-import time
-from typing import Optional, Dict, Any
+import re
+from typing import Optional, Dict, Any, Tuple, List
+
 from ..ladom_schema import LADOMValidator, normalize_ladom
 from ..cache_manager import DocstringCache
 from ..rate_limiter import RateLimiter
@@ -16,163 +26,286 @@ from ..rate_limiter import RateLimiter
 logger = logging.getLogger(__name__)
 
 
+def _hashtext(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _to_text(value: Any) -> str:
+    """Coerce arbitrary JSON-y value into a readable string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        # Prefer common code/text keys first
+        for k in ("code", "text", "value", "summary", "desc", "description", "content"):
+            if k in value and isinstance(value[k], (str, int, float, bool)):
+                return _to_text(value[k])
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    if isinstance(value, list):
+        # Join list items as lines
+        return "\n".join(_to_text(x) for x in value if x is not None)
+    return str(value)
+
+
+def _norm_param(p: Any) -> Dict[str, Any]:
+    """Normalize one parameter entry to a standard dict of strings/bools."""
+    if not isinstance(p, dict):
+        # Heuristic: try to split "name: type - desc"
+        s = _to_text(p)
+        name, typ, desc = s, "", ""
+        if ":" in s:
+            name, rest = s.split(":", 1)
+            if "-" in rest:
+                typ, desc = [x.strip() for x in rest.split("-", 1)]
+            else:
+                typ = rest.strip()
+        return {"name": name.strip(), "type": typ, "default": None, "desc": desc, "optional": False}
+
+    return {
+        "name": _to_text(p.get("name")).strip(),
+        "type": _to_text(p.get("type")).strip(),
+        "default": None if p.get("default") in (None, "", "None") else _to_text(p.get("default")).strip(),
+        "desc": _to_text(p.get("desc") or p.get("description")).strip(),
+        "optional": bool(p.get("optional", False)),
+    }
+
+
 class BaseAnalyzer(ABC):
     """Abstract base class for language-specific analyzers."""
-    
+
     def __init__(self, client=None, cache: Optional[DocstringCache] = None,
                  rate_limiter: Optional[RateLimiter] = None):
         """
-        Initialize the analyzer.
-        
         Args:
-            client: LLM client for docstring generation (must expose .generate(...))
-            cache: Cache manager for storing generated docstrings
-            rate_limiter: Rate limiter for API calls
+            client: LLM client (must expose .generate(system=, prompt=, ...))
+            cache: Cache manager for generated docs
+            rate_limiter: Rate limiter for LLM calls
         """
         self.client = client
         self.cache = cache
         self.rate_limiter = rate_limiter
         self.language = self._get_language_name()
         self.ladom_validator = LADOMValidator()
-        
         logger.info(f"Initialized {self.__class__.__name__}")
-    
+
+    # --- required API ---------------------------------------------------------
+
     @abstractmethod
     def _get_language_name(self) -> str:
-        """
-        Get the language name for this analyzer.
-        
-        Returns:
-            Language name (e.g., 'python', 'javascript')
-        """
         pass
-    
+
     @abstractmethod
     def analyze(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """
-        Analyze a source file and return LADOM structure.
-        
-        Args:
-            file_path: Path to the file to analyze
-            
-        Returns:
-            LADOM-compliant dictionary structure or None if analysis fails
-        """
+        """Return LADOM for the file or None."""
         pass
-    
+
+    # --- helpers --------------------------------------------------------------
+
     def _validate_and_normalize(self, ladom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Validate and normalize a LADOM structure.
-        
-        Args:
-            ladom: LADOM structure to validate
-            
-        Returns:
-            Normalized LADOM or None if validation fails
-        """
         if not self.ladom_validator.validate_ladom(ladom):
             logger.error(f"LADOM validation failed for {self.language} analyzer")
             return None
-        
         return normalize_ladom(ladom)
 
-    def _generate_docstring_with_llm(self, code_snippet: str, 
-                                     node_name: str = "unknown") -> str:
+    def _create_json_prompt(self, code_snippet: str, *, context: str = "") -> str:
         """
-        Generate a docstring using the configured LLM with caching and rate limiting.
-        
-        Args:
-            code_snippet: The code to document
-            node_name: Name of the code element being documented
-            
+        Ask the LLM for STRICT JSON only.
+        Context can include filename, class/method signature, etc., to reduce hallucinations.
+        """
+        ctx = f"CONTEXT:\n{context}\n\n" if context else ""
+        return f"""
+You are documenting code. Base your answer only on the provided CODE and optional CONTEXT.
+If a detail is unknown from the code, leave it empty (do not guess). Do not invent external libraries or types.
+
+Return STRICT JSON only with this schema:
+{{
+  "summary": "string",
+  "params": [{{"name":"", "type":"", "default": null, "desc":"", "optional": false}}],
+  "returns": {{"type":"", "desc":""}},
+  "throws": [],
+  "examples": [],
+  "notes": []
+}}
+- For "examples", output a minimal code snippet as a plain string (no fencing).
+- Keep types simple (e.g., "string", "number", "object") unless explicitly present in the code.
+- Language should match the code.
+
+{ctx}CODE:
+{code_snippet}
+""".strip()
+
+    def _parse_json_lenient(self, raw: str) -> Dict[str, Any]:
+        """Attempt to parse JSON, even if model added extra text."""
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        # Try to isolate the first {...} block
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                pass
+        # Fallback minimal structure skimming the first 280 chars to summary
+        return {
+            "summary": _to_text(raw).strip()[:280],
+            "params": [],
+            "returns": {"type": "", "desc": ""},
+            "throws": [],
+            "examples": [],
+            "notes": [],
+        }
+
+    def _normalize_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Coerce LLM output to the expected shapes and string types."""
+        summary = _to_text(details.get("summary")).strip()
+
+        raw_params = details.get("params") or []
+        if not isinstance(raw_params, list):
+            raw_params = [raw_params]
+        params = [_norm_param(p) for p in raw_params if p is not None]
+
+        raw_ret = details.get("returns") or {}
+        if isinstance(raw_ret, dict):
+            r_type = _to_text(raw_ret.get("type")).strip()
+            r_desc = _to_text(raw_ret.get("desc") or raw_ret.get("description")).strip()
+        else:
+            s = _to_text(raw_ret)
+            if " - " in s:
+                r_type, r_desc = [x.strip() for x in s.split(" - ", 1)]
+            else:
+                r_type, r_desc = s.strip(), ""
+        returns = {"type": r_type, "desc": r_desc}
+
+        raw_throws = details.get("throws") or []
+        if not isinstance(raw_throws, list):
+            raw_throws = [raw_throws]
+        throws = [_to_text(t).strip() for t in raw_throws if t is not None and _to_text(t).strip()]
+
+        raw_examples = details.get("examples") or []
+        if not isinstance(raw_examples, list):
+            raw_examples = [raw_examples]
+        examples = [_to_text(e).strip() for e in raw_examples if e is not None and _to_text(e).strip()]
+
+        raw_notes = details.get("notes") or []
+        if not isinstance(raw_notes, list):
+            raw_notes = [raw_notes]
+        notes = [_to_text(n).strip() for n in raw_notes if n is not None and _to_text(n).strip()]
+
+        return {
+            "summary": summary,
+            "params": params,
+            "returns": returns,
+            "throws": throws,
+            "examples": examples,
+            "notes": notes,
+        }
+
+    def _format_google_style_docstring(self, d: Dict[str, Any]) -> str:
+        """Produce a compact Google-style block from structured details."""
+        parts: List[str] = []
+        if d.get("summary"):
+            parts.append(_to_text(d["summary"]).strip())
+
+        params = d.get("params") or []
+        if params:
+            parts.append("\nArgs:")
+            for p in params:
+                name = _to_text(p.get("name")).strip()
+                typ = _to_text(p.get("type")).strip()
+                desc = _to_text(p.get("desc") or p.get("description")).strip()
+                default = p.get("default", None)
+                opt = bool(p.get("optional"))
+                tail = ""
+                if opt or (default not in (None, "", "None")):
+                    tail = f" (optional, default={_to_text(default)})"
+                parts.append(f"    {name} ({typ}): {desc}{tail}".rstrip())
+
+        ret = d.get("returns") or {}
+        if ret.get("type") or ret.get("desc") or ret.get("description"):
+            parts.append("\nReturns:")
+            rtyp = _to_text(ret.get("type")).strip()
+            rdesc = _to_text(ret.get("desc") or ret.get("description")).strip()
+            parts.append(f"    {rtyp}: {rdesc}".rstrip())
+
+        throws = d.get("throws") or []
+        if throws:
+            parts.append("\nRaises:")
+            for t in throws:
+                parts.append(f"    {_to_text(t).strip()}")
+
+        ex = d.get("examples") or []
+        if ex:
+            parts.append("\nExamples:")
+            for e in ex[:2]:
+                parts.append(f"    {_to_text(e).strip()}")
+
+        return "\n".join(parts).strip() or "No documentation available."
+
+    def _cache_key(self, code_snippet: str) -> str:
+        return f"{self.language}:{_hashtext(code_snippet)}"
+
+    def generate_doc(self, code_snippet: str, node_name: str = "unknown", *, context: str = "") -> Tuple[str, Dict[str, Any]]:
+        """
+        Week 1: JSON contract + docstring text for backward compatibility.
+
         Returns:
-            Generated docstring or fallback message
+            (docstring_text, normalized_details_dict)
         """
         if not self.client:
             logger.warning(f"No LLM client available for {node_name}")
-            return self._get_fallback_docstring()
+            empty = {"summary": "", "params": [], "returns": {"type": "", "desc": ""}, "throws": [], "examples": [], "notes": []}
+            return "No documentation available.", empty
 
-        # Check cache first
+        ck = self._cache_key(code_snippet)
         if self.cache:
-            cached = self.cache.get(code_snippet, self.language)
+            cached = self.cache.get(ck, self.language)
             if cached:
-                logger.debug(f"Using cached docstring for {node_name}")
-                return cached
+                try:
+                    data = json.loads(cached)
+                    data = self._normalize_details(data)
+                    return self._format_google_style_docstring(data), data
+                except Exception:
+                    pass
 
-        # Apply rate limiting
         if self.rate_limiter:
             self.rate_limiter.wait_if_needed()
 
-        # Generate docstring
-        logger.info(f"Generating docstring for `{node_name}` using local LLM")
+        logger.info(f"Generating structured doc for `{node_name}` using local LLM")
+        prompt = self._create_json_prompt(code_snippet, context=context)
         try:
-            prompt = self._create_docstring_prompt(code_snippet)
-            # Local provider contract: client.generate(system=..., prompt=..., temperature=...)
-            docstring = self.client.generate(
-                system="", prompt=prompt, temperature=0.2
-            ).strip()
-
-            # Cache the result
-            if self.cache and docstring:
-                self.cache.set(code_snippet, docstring, self.language)
-            return self._clean_llm_response(docstring) if docstring else self._get_fallback_docstring()
-
+            raw = self.client.generate(system="", prompt=prompt, temperature=0.2)
+            details = self._parse_json_lenient(raw)
+            details = self._normalize_details(details)
         except Exception as e:
-            logger.error(f"Failed to generate docstring for {node_name} using LLM: {e}")
-            return self._get_fallback_docstring()
+            logger.error(f"LLM failed for {node_name}: {e}")
+            details = {"summary": "", "params": [], "returns": {"type": "", "desc": ""}, "throws": [], "examples": [], "notes": []}
 
-    @abstractmethod
-    def _create_docstring_prompt(self, code_snippet: str) -> str:
-        """
-        Create the specific prompt string for the LLM based on language.
-        
-        Args:
-            code_snippet: The code snippet to document
-            
-        Returns:
-            Prompt string for the LLM
-        """
-        pass
-    
-    @abstractmethod
-    def _clean_llm_response(self, response: str) -> str:
-        """
-        Clean and format the LLM response.
-        
-        Args:
-            response: Raw LLM response
-            
-        Returns:
-            Cleaned docstring
-        """
-        pass
+        if self.cache:
+            try:
+                self.cache.set(ck, json.dumps(details, ensure_ascii=False), self.language)
+            except Exception:
+                pass
 
-    def _get_fallback_docstring(self) -> str:
-        """
-        Get a fallback docstring when generation fails.
-        
-        Returns:
-            Generic fallback docstring
-        """
-        return "No documentation available."
-    
+        return self._format_google_style_docstring(details), details
+
+    # --- I/O helpers ----------------------------------------------------------
+
     def _safe_read_file(self, file_path: str) -> Optional[str]:
-        """
-        Safely read a file with error handling.
-        
-        Args:
-            file_path: Path to file
-            
-        Returns:
-            File contents or None on error
-        """
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 return f.read()
         except UnicodeDecodeError:
             logger.warning(f"Failed to read {file_path} with UTF-8, trying latin-1")
             try:
-                with open(file_path, 'r', encoding='latin-1') as f:
+                with open(file_path, "r", encoding="latin-1") as f:
                     return f.read()
             except Exception as e:
                 logger.error(f"Failed to read {file_path}: {e}")
@@ -181,5 +314,5 @@ class BaseAnalyzer(ABC):
             logger.error(f"File not found: {file_path}")
             return None
         except Exception as e:
-            logger.error(f"An unexpected error occurred while reading {file_path}: {e}")
+            logger.error(f"Unexpected error while reading {file_path}: {e}")
             return None

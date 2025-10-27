@@ -1,331 +1,392 @@
 # src/analyzers/js_analyzer.py
-
 """
-JavaScript-specific analyzer for extracting documentation from JS source files.
+JavaScript analyzer for extracting high-level symbols.
+
+Covers:
+- Top-level functions (declaration + const arrow)
+- Classes
+- Classic class methods:  methodName(a,b) { ... }
+- Class field arrow methods:  name = (a,b) => { ... } / async
+- Instance methods assigned INSIDE constructor:
+    this.name = (a) => { ... }   OR   this.name = function(a) { ... }
+- Prototype methods OUTSIDE class:
+    ClassName.prototype.name = function(a) { ... }
+
+Constructor handling:
+- Forces empty returns
+- Suppresses examples (constructors often cause vendor-biased snippets)
+- Sanitizes summary to “Constructs a <ClassName> instance.” if LLM drifts
 """
 
-import esprima
-import re
-import os
+from __future__ import annotations
 import logging
-from typing import Optional, Dict, Any, List
+import re
+from typing import Any, Dict, List, Optional
+
 from .base_analyzer import BaseAnalyzer
 
 logger = logging.getLogger(__name__)
 
+# Top-level functions
+FUNC_RE = re.compile(
+    r"(^|\n)\s*function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*\{",
+    re.MULTILINE,
+)
+ARROW_RE = re.compile(
+    r"(^|\n)\s*const\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\((?P<args>[^)]*)\)\s*=>\s*\{",
+    re.MULTILINE,
+)
+
+# Classes & methods
+CLASS_RE = re.compile(
+    r"(^|\n)\s*class\s+(?P<name>[A-Za-z_$][\w$]*)[^{]*\{(?P<body>.*?)}",
+    re.DOTALL,
+)
+# Classic class methods:  methodName(a,b) { ... }
+METHOD_RE = re.compile(
+    r"\n\s*(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*\{",
+    re.MULTILINE,
+)
+# Class field arrow methods inside class body: name = (a) => { ... } / async
+CLASS_FIELD_ARROW_RE = re.compile(
+    r"\n\s*(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\((?P<args>[^)]*)\)\s*=>\s*\{",
+    re.MULTILINE,
+)
+
+# Instance methods assigned INSIDE constructor body:
+CTOR_THIS_FN_RE = re.compile(
+    r"\bthis\.(?P<name>[A-Za-z_$][\w$]*)\s*=\s*function\s*\((?P<args>[^)]*)\)\s*\{",
+    re.MULTILINE,
+)
+CTOR_THIS_ARROW_RE = re.compile(
+    r"\bthis\.(?P<name>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?\((?P<args>[^)]*)\)\s*=>\s*\{",
+    re.MULTILINE,
+)
+
+# Prototype methods OUTSIDE class:
+PROTOTYPE_RE = re.compile(
+    r"(?P<class>[A-Za-z_$][\w$]*)\.prototype\.(?P<name>[A-Za-z_$][\w$]*)\s*=\s*function\s*\((?P<args>[^)]*)\)\s*\{",
+    re.MULTILINE,
+)
+
 
 class JavaScriptAnalyzer(BaseAnalyzer):
-    """Analyzer for JavaScript source files."""
-    
     def _get_language_name(self) -> str:
         return "javascript"
 
-    def _create_docstring_prompt(self, code_snippet: str) -> str:
-        """Create prompt for JavaScript docstring generation."""
-        return (
-            f"Generate a concise JSDoc-style documentation comment for this JavaScript code. "
-            f"Include a brief description, @param tags for all parameters, and an @returns tag for the return value. "
-            f"Return ONLY the comment content without the `/** ... */` block.\n\n"
-            f"Code:\n```javascript\n{code_snippet}\n```"
-        )
-    
-    def _clean_llm_response(self, response: str) -> str:
-        """Clean LLM response for JavaScript docstring."""
-        # Remove markdown code blocks if present
-        response = re.sub(r'```[\s\S]*?```', '', response).strip()
-        # Remove leading/trailing `/**` and `*/`
-        response = response.strip().strip('/').strip('*').strip()
-        return response
-    
     def analyze(self, file_path: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse a JavaScript file and return LADOM structure.
-        
-        Args:
-            file_path: Path to the JavaScript file
-            
-        Returns:
-            LADOM structure or None on error
-        """
-        source_code = self._safe_read_file(file_path)
-        if not source_code:
+        source = self._safe_read_file(file_path)
+        if source is None:
             return None
-        
-        try:
-            tree = esprima.parse(source_code, {
-                'loc': True,
-                'range': True,
-                'attachComment': True
-            })
-        except esprima.Error as e:
-            logger.error(f"Error parsing JavaScript file {file_path}: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error parsing {file_path}: {e}")
-            return None
-        
-        functions = []
-        classes = []
-        
-        for node in tree.body:
-            if node.type == 'ClassDeclaration':
-                classes.append(self._process_class(node, source_code))
-            elif node.type == 'FunctionDeclaration':
-                functions.append(self._process_function(node, source_code))
-            elif node.type == 'VariableDeclaration':
-                # Handle function expressions and arrow functions
-                for declaration in node.declarations:
-                    if declaration.init and declaration.init.type in ('FunctionExpression', 'ArrowFunctionExpression'):
-                        func_data = self._process_function(
-                            declaration.init,
-                            source_code,
-                            declaration.id.name
+
+        file_entry: Dict[str, Any] = {
+            "path": file_path,
+            "summary": "",
+            "functions": [],
+            "classes": [],
+        }
+
+        # --- Top-level function declarations ---
+        for m in FUNC_RE.finditer(source):
+            name = m.group("name")
+            args = m.group("args")
+            start_line = source.count("\n", 0, m.start()) + 1
+            snippet = self._extract_brace_block(source, m.end() - 1)
+            end_line = start_line + snippet.count("\n")
+            sym = self._build_function_symbol(
+                name=name,
+                signature=f"({args.strip()})",
+                args=args,
+                code_snippet=snippet,
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                context=f"function {name}({args.strip()})",
+                is_constructor=False,
+                class_name=None,
+            )
+            file_entry["functions"].append(sym)
+
+        # --- Top-level arrow functions (const name = (... ) => { ... }) ---
+        for m in ARROW_RE.finditer(source):
+            name = m.group("name")
+            args = m.group("args")
+            start_line = source.count("\n", 0, m.start()) + 1
+            snippet = self._extract_brace_block(source, m.end() - 1)
+            end_line = start_line + snippet.count("\n")
+            sym = self._build_function_symbol(
+                name=name,
+                signature=f"({args.strip()}) => {{...}}",
+                args=args,
+                code_snippet=snippet,
+                file_path=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                context=f"const {name} = ({args.strip()}) => {{...}}",
+                is_constructor=False,
+                class_name=None,
+            )
+            file_entry["functions"].append(sym)
+
+        # --- Classes and methods (including constructor + class-field arrows) ---
+        classes_found: List[Dict[str, Any]] = []
+        for m in CLASS_RE.finditer(source):
+            cls_name = m.group("name")
+            body = m.group("body")
+            cls_start = source.count("\n", 0, m.start()) + 1
+            methods: List[Dict[str, Any]] = []
+
+            # 1) classic methods: foo(a) { ... }
+            for mm in METHOD_RE.finditer(body):
+                mname = mm.group("name")
+                margs = mm.group("args")
+                body_prefix = body[:mm.start()]
+                m_start = cls_start + body_prefix.count("\n") + 1
+                method_src = self._extract_brace_block(body, mm.end() - 1)
+                m_end = m_start + method_src.count("\n")
+                is_ctor = (mname == "constructor")
+
+                sym = self._build_function_symbol(
+                    name=mname,
+                    signature=f"({margs.strip()})" + ("" if not is_ctor else ""),
+                    args=margs,
+                    code_snippet=method_src,
+                    file_path=file_path,
+                    start_line=m_start,
+                    end_line=m_end,
+                    context=f"class {cls_name} :: method {mname}({margs.strip()})",
+                    is_constructor=is_ctor,
+                    class_name=cls_name,
+                )
+                methods.append(sym)
+
+                # If this is the constructor, scan its body for instance methods assigned to `this.*`
+                if is_ctor:
+                    methods.extend(
+                        self._extract_instance_methods_from_constructor(
+                            ctor_body=method_src,
+                            ctor_start_line=m_start,
+                            cls_name=cls_name,
+                            file_path=file_path,
                         )
-                        functions.append(func_data)
-        
-        ladom = {
-            "project_name": os.path.basename(os.path.dirname(os.path.abspath(file_path))) or "JavaScript Project",
-            "files": [
-                {
-                    "path": os.path.abspath(file_path),
-                    "functions": functions,
-                    "classes": classes
-                }
-            ]
-        }
-        
-        return self._validate_and_normalize(ladom)
-    
-    def _process_class(self, node, source_code: str) -> Dict[str, Any]:
-        """
-        Process a class node into LADOM format.
-        
-        Args:
-            node: Esprima class node
-            source_code: Full source code
-            
-        Returns:
-            Class dictionary in LADOM format
-        """
-        docstring = self._find_jsdoc(node, source_code)
-        
-        if docstring:
-            _, _, brief_desc = self._parse_jsdoc(docstring)
-        else:
-            code_snippet = source_code[node.range[0]:node.range[1]]
-            brief_desc = self._generate_docstring_with_llm(code_snippet, node.id.name)
-            
-        methods = []
-        if hasattr(node.body, 'body'):
-            for method_node in node.body.body:
-                if method_node.type == 'MethodDefinition':
-                    methods.append(self._process_method(method_node, source_code))
-        
-        return {
-            'name': node.id.name,
-            'description': brief_desc,
-            'methods': methods
-        }
-    
-    def _process_method(self, node, source_code: str) -> Dict[str, Any]:
-        """
-        Process a method node into LADOM format.
-        
-        Args:
-            node: Esprima method node
-            source_code: Full source code
-            
-        Returns:
-            Method dictionary in LADOM format
-        """
-        docstring = self._find_jsdoc(node, source_code)
-        
-        if docstring:
-            parsed_args, parsed_returns, brief_desc = self._parse_jsdoc(docstring)
-        else:
-            method_name = node.key.name if hasattr(node.key, 'name') else 'anonymous'
-            code_snippet = source_code[node.range[0]:node.range[1]]
-            generated_docstring = self._generate_docstring_with_llm(code_snippet, method_name)
-            parsed_args, parsed_returns, brief_desc = self._parse_jsdoc(generated_docstring)
-        
-        method_name = node.key.name if hasattr(node.key, 'name') else 'anonymous'
-        method_params = self._extract_parameters(node.value, source_code)
-        
-        # Convert to LADOM parameter format
-        parameters = []
-        for param_name in method_params:
-            param_info = parsed_args.get(param_name, {})
-            parameters.append({
-                'name': param_name,
-                'type': param_info.get('type', 'any'),
-                'description': param_info.get('desc', 'No description available.')
-            })
-        
-        return {
-            'name': method_name,
-            'description': brief_desc,
-            'parameters': parameters,
-            'returns': {
-                'type': parsed_returns.get('type', 'void'),
-                'description': parsed_returns.get('desc', 'No return description.')
-            }
-        }
-    
-    def _process_function(self, node, source_code: str, name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Process a function node into LADOM format.
-        
-        Args:
-            node: Esprima function node
-            source_code: Full source code
-            name: Optional function name (for expressions)
-            
-        Returns:
-            Function dictionary in LADOM format
-        """
-        docstring = self._find_jsdoc(node, source_code)
-        
-        if docstring:
-            parsed_args, parsed_returns, brief_desc = self._parse_jsdoc(docstring)
-        else:
-            func_name = name or (node.id.name if hasattr(node, 'id') and node.id and hasattr(node.id, 'name') else 'anonymous')
-            code_snippet = source_code[node.range[0]:node.range[1]]
-            generated_docstring = self._generate_docstring_with_llm(code_snippet, func_name)
-            parsed_args, parsed_returns, brief_desc = self._parse_jsdoc(generated_docstring)
-        
-        func_name = name or (node.id.name if hasattr(node, 'id') and node.id and hasattr(node.id, 'name') else 'anonymous')
-        func_params = self._extract_parameters(node, source_code)
-        
-        # Convert to LADOM parameter format
-        parameters = []
-        for param_name in func_params:
-            param_info = parsed_args.get(param_name, {})
-            parameters.append({
-                'name': param_name,
-                'type': param_info.get('type', 'any'),
-                'description': param_info.get('desc', 'No description available.')
-            })
-        
-        return {
-            'name': func_name,
-            'description': brief_desc,
-            'parameters': parameters,
-            'returns': {
-                'type': parsed_returns.get('type', 'void'),
-                'description': parsed_returns.get('desc', 'No return description.')
-            }
-        }
-    
-    def _extract_parameters(self, node, source_code: str) -> List[str]:
-        """
-        Extract parameter names from a function node.
-        
-        Args:
-            node: Function node
-            source_code: Full source code
-            
-        Returns:
-            List of parameter names
-        """
-        params = []
-        if not hasattr(node, 'params') or not node.params:
-            return params
-        
-        for param in node.params:
-            param_name = self._get_param_name(param, source_code)
-            if param_name:
-                params.append(param_name)
-        return params
-    
-    def _get_param_name(self, param, source_code: str) -> Optional[str]:
-        """
-        Extract parameter name handling various param types.
-        
-        Args:
-            param: Parameter node
-            source_code: Full source code
-            
-        Returns:
-            Parameter name or None
-        """
-        if param.type == 'Identifier':
-            return param.name
-        elif param.type == 'RestElement':
-            if hasattr(param.argument, 'name'):
-                return f"...{param.argument.name}"
-            return "...args"
-        elif param.type == 'AssignmentPattern':
-            # Default parameter
-            return self._get_param_name(param.left, source_code)
-        elif param.type == 'ObjectPattern':
-            return "{destructured}"
-        elif param.type == 'ArrayPattern':
-            return "[destructured]"
-        elif hasattr(param, 'range'):
-            # Fallback: extract from source
-            try:
-                return source_code[param.range[0]:param.range[1]]
-            except:
-                return "unknown"
-        return "unknown"
+                    )
 
-    def _find_jsdoc(self, node, source_code: str) -> str:
-        """Find JSDoc comment for a node."""
-        if hasattr(node, 'leadingComments') and node.leadingComments:
-            for comment in reversed(node.leadingComments):
-                if comment.type == 'Block' and comment.value.strip().startswith('*'):
-                    return f"/**{comment.value}*/"
-        return ""
-    
-    def _parse_jsdoc(self, docstring: str) -> (Dict, Dict, str):
-        """
-        Parse JSDoc comment.
-        
-        Returns:
-            (args_dict, returns_dict, brief_description)
-        """
-        # Normalize the docstring for parsing
-        clean_doc = docstring.strip('/**').strip().rstrip('*/').strip()
-        
-        args = {}
-        returns = {}
-        description = ""
-        
-        # Split into main description and tag sections
-        tag_start_match = re.search(r'^\s*@', clean_doc, re.MULTILINE)
-        if tag_start_match:
-            main_text = clean_doc[:tag_start_match.start()]
-            tags_text = clean_doc[tag_start_match.start():]
-            description = ' '.join(line.strip().lstrip('*').strip() 
-                                  for line in main_text.split('\n') if line.strip())
-        else:
-            tags_text = ""
-            description = ' '.join(line.strip().lstrip('*').strip() 
-                                  for line in clean_doc.split('\n') if line.strip())
+            # 2) class field arrow methods: foo = (a) => { ... } / async
+            for mm in CLASS_FIELD_ARROW_RE.finditer(body):
+                mname = mm.group("name")
+                margs = mm.group("args")
+                body_prefix = body[:mm.start()]
+                m_start = cls_start + body_prefix.count("\n") + 1
+                method_src = self._extract_brace_block(body, mm.end() - 1)
+                m_end = m_start + method_src.count("\n")
+                methods.append(
+                    self._build_function_symbol(
+                        name=mname,
+                        signature=f"({margs.strip()}) => {{...}}",
+                        args=margs,
+                        code_snippet=method_src,
+                        file_path=file_path,
+                        start_line=m_start,
+                        end_line=m_end,
+                        context=f"class {cls_name} :: field {mname} = ({margs.strip()}) => {{...}}",
+                        is_constructor=False,
+                        class_name=cls_name,
+                    )
+                )
 
-        # Parse @param tags
-        param_pattern = r'@param\s+(?:\{([^}]+)\})?\s*(\[?\w+\.?\]?)(?:(?:\s+-\s*|\s*)(.*?))?(?=@|$)'
-        for match in re.finditer(param_pattern, tags_text, re.DOTALL):
-            param_type = match.group(1)
-            param_name = match.group(2)
-            param_desc = match.group(3)
-            
-            if param_name:
-                param_name = param_name.strip('[]')
-                args[param_name] = {
-                    'type': param_type.strip() if param_type else 'any',
-                    'desc': ' '.join(param_desc.split()) if param_desc else ''
-                }
-        
-        # Parse @returns or @return tag
-        returns_pattern = r'@returns?\s+(?:\{([^}]+)\})?\s*(.*?)(?=@|$)'
-        returns_match = re.search(returns_pattern, tags_text, re.DOTALL)
-        if returns_match:
-            return_type = returns_match.group(1)
-            return_desc = returns_match.group(2)
+            classes_found.append({
+                "name": cls_name,
+                "description": "",
+                "methods": methods,
+                "lines": {"start": cls_start, "end": None},
+                "file_path": file_path,
+                "language_hint": "javascript",
+            })
+
+        # Attach classes
+        file_entry["classes"].extend(classes_found)
+
+        # --- Prototype methods OUTSIDE class (augment corresponding class) ---
+        if classes_found:
+            class_names = {c["name"] for c in classes_found}
+            for pm in PROTOTYPE_RE.finditer(source):
+                cls = pm.group("class")
+                if cls not in class_names:
+                    continue
+                mname = pm.group("name")
+                margs = pm.group("args")
+                start_line = source.count("\n", 0, pm.start()) + 1
+                snippet = self._extract_brace_block(source, pm.end() - 1)
+                end_line = start_line + snippet.count("\n")
+                sym = self._build_function_symbol(
+                    name=mname,
+                    signature=f"({margs.strip()})",
+                    args=margs,
+                    code_snippet=snippet,
+                    file_path=file_path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    context=f"{cls}.prototype.{mname}({margs.strip()})",
+                    is_constructor=False,
+                    class_name=cls,
+                )
+                # push onto the right class
+                for c in file_entry["classes"]:
+                    if c["name"] == cls:
+                        c["methods"].append(sym)
+                        break
+
+        return {"files": [file_entry]}
+
+    # ------------------------ helpers ------------------------
+
+    def _extract_instance_methods_from_constructor(
+        self, *, ctor_body: str, ctor_start_line: int, cls_name: str, file_path: str
+    ) -> List[Dict[str, Any]]:
+        """Find `this.name = function(...) {}` or `this.name = (...) => {}` inside constructor."""
+        methods: List[Dict[str, Any]] = []
+
+        # function(...) { ... }
+        for mm in CTOR_THIS_FN_RE.finditer(ctor_body):
+            name = mm.group("name")
+            args = mm.group("args")
+            body_prefix = ctor_body[:mm.start()]
+            start_line = ctor_start_line + body_prefix.count("\n")
+            snippet = self._extract_brace_block(ctor_body, mm.end() - 1)
+            end_line = start_line + snippet.count("\n")
+            methods.append(
+                self._build_function_symbol(
+                    name=name,
+                    signature=f"({args.strip()})",
+                    args=args,
+                    code_snippet=snippet,
+                    file_path=file_path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    context=f"class {cls_name} :: this.{name} = function({args.strip()}) {{...}}",
+                    is_constructor=False,
+                    class_name=cls_name,
+                )
+            )
+
+        # (..) => { ... }
+        for mm in CTOR_THIS_ARROW_RE.finditer(ctor_body):
+            name = mm.group("name")
+            args = mm.group("args")
+            body_prefix = ctor_body[:mm.start()]
+            start_line = ctor_start_line + body_prefix.count("\n")
+            snippet = self._extract_brace_block(ctor_body, mm.end() - 1)
+            end_line = start_line + snippet.count("\n")
+            methods.append(
+                self._build_function_symbol(
+                    name=name,
+                    signature=f"({args.strip()}) => {{...}}",
+                    args=args,
+                    code_snippet=snippet,
+                    file_path=file_path,
+                    start_line=start_line,
+                    end_line=end_line,
+                    context=f"class {cls_name} :: this.{name} = ({args.strip()}) => {{...}}",
+                    is_constructor=False,
+                    class_name=cls_name,
+                )
+            )
+
+        return methods
+
+    def _build_function_symbol(
+        self,
+        *,
+        name: str,
+        signature: str,
+        args: str,
+        code_snippet: str,
+        file_path: str,
+        start_line: int,
+        end_line: Optional[int],
+        context: str,
+        is_constructor: bool,
+        class_name: Optional[str],
+    ) -> Dict[str, Any]:
+        # Call LLM once with explicit context
+        doc, details = self.generate_doc(code_snippet, node_name=name, context=context)
+
+        # Prefer summary-only; sanitize constructor phrasing and strip examples
+        if is_constructor:
+            summary = self._sanitize_constructor_summary(class_name or "Class", (details.get("summary") or "").strip())
+            examples: List[str] = []  # suppress constructor examples entirely
+            returns = {"type": "", "description": ""}  # constructors don't return API values
+        else:
+            summary = (details.get("summary") or "").strip()
+            examples = details.get("examples") or []
+            dret = details.get("returns") or {}
             returns = {
-                'type': return_type.strip() if return_type else 'void',
-                'desc': ' '.join(return_desc.split()) if return_desc else ''
+                "type": (dret.get("type") or "").strip(),
+                "description": (dret.get("desc") or dret.get("description") or "").strip(),
             }
-        
-        return args, returns, description
+
+        params = self._merge_params(args, details.get("params") or [])
+
+        return {
+            "name": name,
+            "signature": signature,
+            "description": summary,
+            "parameters": params,
+            "returns": returns,
+            "throws": details.get("throws") or [],
+            "examples": examples,
+            "lines": {"start": start_line, "end": end_line},
+            "file_path": file_path,
+            "language_hint": "javascript",
+        }
+
+    def _sanitize_constructor_summary(self, cls_name: str, summary: str) -> str:
+        """Normalize constructor docs to avoid vendor-biased phrasing/returns."""
+        cleaned = summary.strip()
+        if not cleaned or cls_name not in cleaned:
+            return f"Constructs a {cls_name} instance."
+        if "return" in cleaned.lower() or "returns" in cleaned.lower():
+            return f"Constructs a {cls_name} instance."
+        return cleaned
+
+    def _merge_params(self, arglist: str, details_params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Split comma args and align with details by name if possible."""
+        names = []
+        for raw in [a.strip() for a in arglist.split(",") if a.strip()]:
+            if raw.startswith("{"):
+                names.append({"name": "options", "default": None})
+            else:
+                if "=" in raw:
+                    n, d = raw.split("=", 1)
+                    names.append({"name": n.strip(), "default": d.strip()})
+                else:
+                    names.append({"name": raw, "default": None})
+
+        dmap = {p.get("name"): p for p in details_params if p.get("name")}
+        out: List[Dict[str, Any]] = []
+        for p in names:
+            dp = dmap.get(p["name"], {})
+            out.append({
+                "name": p["name"],
+                "type": (dp.get("type") or "").strip(),
+                "default": dp.get("default", p["default"]),
+                "description": (dp.get("desc") or dp.get("description") or "").strip(),
+                "optional": bool(dp.get("optional")) or (p["default"] is not None),
+            })
+        return out
+
+    def _extract_brace_block(self, src: str, brace_pos: int) -> str:
+        """Return text from the first '{' at/after brace_pos until its matching '}' (best-effort)."""
+        i = src.find("{", brace_pos)
+        if i == -1:
+            return src[brace_pos: brace_pos + 400]
+        depth = 0
+        for j in range(i, len(src)):
+            c = src[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[i:j+1]
+        return src[i:]

@@ -1,18 +1,20 @@
 # src/providers/ollama_client.py
 """
 Minimal local LLM client for Ollama.
-- No external deps (uses urllib)
-- Safe defaults (local-only)
-- Tiny API: LLM.generate(...) and LLM.embed(...)
+- Pure stdlib (urllib) — no external deps
+- POSTs to http://localhost:11434/api/generate (and /api/embeddings if you use it later)
 
 Usage:
-    from src.providers.ollama_client import LLM, LLMConfig, from_config
-    llm = from_config(cfg_dict)  # or LLM()
-    text = llm.generate(system="...", prompt="...")
+    from src.providers.ollama_client import LLM, LLMConfig
+    llm = LLM(LLMConfig(model="qwen2.5-coder:7b"))
+    text = llm.generate(system="", prompt="...")
 
-Ollama must be running locally:
-    - Base URL: http://localhost:11434
-    - Endpoints: /api/generate, /api/embeddings
+Environment overrides:
+    OLLAMA_BASE_URL  (default http://localhost:11434)
+    DOCGEN_MODEL     (e.g., qwen2.5-coder:7b)
+    OLLAMA_TEMPERATURE
+    DOCGEN_TIMEOUT
+    DOCGEN_EMBED_MODEL
 """
 
 from __future__ import annotations
@@ -41,18 +43,23 @@ class LLM:
         self.embedding_model = os.getenv("DOCGEN_EMBED_MODEL") or cfg.embedding_model
         self.timeout = int(os.getenv("DOCGEN_TIMEOUT") or cfg.timeout_seconds)
 
-    # --- Text generation -----------------------------------------------------
-    def generate(self, *, system: str = "", prompt: str, temperature: Optional[float] = None, max_tokens: Optional[int] = None) -> str:
-        # We concatenate system + prompt for Ollama's /api/generate
+    def generate(
+        self,
+        *,
+        system: str = "",
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
         final_prompt = f"{system.strip()}\n\n{prompt.strip()}".strip() if system else prompt.strip()
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "prompt": final_prompt,
             "stream": False,
             "options": {"temperature": float(self.temperature if temperature is None else temperature)},
         }
         if max_tokens is not None:
-            # Ollama ignores max_tokens for many models, but include if it starts supporting it
+            # Supported by some models/endpoints as num_predict
             payload["options"]["num_predict"] = int(max_tokens)
 
         req = Request(
@@ -64,7 +71,6 @@ class LLM:
             data = json.loads(resp.read().decode("utf-8"))
         return data.get("response", "")
 
-    # --- Embeddings ----------------------------------------------------------
     def embed(self, texts: List[str]) -> List[List[float]]:
         if not self.embedding_model:
             raise RuntimeError("No embedding_model configured")
@@ -79,17 +85,3 @@ class LLM:
                 data = json.loads(resp.read().decode("utf-8"))
             vectors.append(data["embedding"])
         return vectors
-
-
-# Helper to construct from your YAML dict
-def from_config(cfg_dict: dict) -> LLM:
-    llm_cfg = (cfg_dict.get("llm") or {}) if isinstance(cfg_dict, dict) else {}
-    return LLM(
-        LLMConfig(
-            base_url=llm_cfg.get("base_url", "http://localhost:11434"),
-            model=llm_cfg.get("model", "qwen2.5-coder:7b"),
-            temperature=float(llm_cfg.get("temperature", 0.2) or 0.2),
-            embedding_model=llm_cfg.get("embedding_model", "all-minilm:l6-v2"),
-            timeout_seconds=int(llm_cfg.get("timeout_seconds", 120) or 120),
-        )
-    )
