@@ -1,11 +1,10 @@
 # src/doc_generator.py
 
 """
-Week 1: Richer Markdown
-- Adds Project Overview (auto), Table of Contents, and Per-file Summary table
-- Slugifies anchors (safe for Windows paths with spaces/colons)
-- Avoids duplicate 'Returns' by expecting per-symbol 'description' to be summary-only
-- Computes source links gracefully when end line is missing
+Richer Technical Markdown + simple HTML wrapper.
+
+- Adds Overview, TOC, File summaries; anchors are slugified.
+- HTMLGenerator now derives the Markdown path from the provided HTML path.
 """
 
 from __future__ import annotations
@@ -37,13 +36,11 @@ class MarkdownGenerator:
         lines.append(f"# {project} — Documentation\n")
         lines.append("> Generated locally via Ollama\n")
 
-        # Overview
         lines.append("## Overview\n")
         lines.append(f"- **Files:** {counts.files}")
         lines.append(f"- **Functions:** {counts.functions}")
         lines.append(f"- **Classes:** {counts.classes}\n")
 
-        # TOC
         lines.append("## Table of Contents\n")
         for f in files:
             anchor = self._anchor_for_file(f.get("path", "unknown"))
@@ -51,7 +48,6 @@ class MarkdownGenerator:
             lines.append(f"- [{short}](#{anchor})")
         lines.append("")
 
-        # Per-file summary table
         lines.append("## File Summaries\n")
         lines.append("| File | Functions | Classes |")
         lines.append("|---|---:|---:|")
@@ -62,7 +58,6 @@ class MarkdownGenerator:
             lines.append(f"| {short} | {fn} | {cl} |")
         lines.append("")
 
-        # Detailed sections
         for f in files:
             path = f.get("path", "")
             anchor = self._anchor_for_file(path)
@@ -72,14 +67,12 @@ class MarkdownGenerator:
             if f.get("summary"):
                 lines.append(f"{f['summary']}\n")
 
-            # Functions
             funcs = f.get("functions") or []
             if funcs:
                 lines.append("#### Functions\n")
                 for fn in funcs:
                     lines.extend(self._emit_symbol(fn, kind="function"))
 
-            # Classes
             classes = f.get("classes") or []
             if classes:
                 lines.append("#### Classes\n")
@@ -96,12 +89,10 @@ class MarkdownGenerator:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines).strip() + "\n")
 
-    # --- helpers
-
     def _emit_symbol(self, sym: Dict[str, Any], *, kind: str) -> List[str]:
         name = sym.get("name", f"unnamed-{kind}")
         sig = sym.get("signature") or ""
-        desc = sym.get("description") or ""  # summary-only expected
+        desc = sym.get("description") or ""
         params = sym.get("parameters") or []
         ret = sym.get("returns") or {}
         lines = []
@@ -135,10 +126,9 @@ class MarkdownGenerator:
                 code = (e or "").strip()
                 lines.append(f"```{sym.get('language_hint','')}\n{code}\n```")
 
-        # Source lines
-        lines_info = sym.get("lines") or {}
-        start = lines_info.get("start")
-        end = lines_info.get("end")
+        li = sym.get("lines") or {}
+        start = li.get("start")
+        end = li.get("end")
         file_path = sym.get("file_path") or ""
         if start:
             suffix = f"#L{start}-L{end}" if end else f"#L{start}"
@@ -148,9 +138,7 @@ class MarkdownGenerator:
 
     def _anchor_for_file(self, path: str) -> str:
         raw = (path or "unknown").replace("\\", "/").lower()
-        # remove drive letters like d:/
         raw = re.sub(r"^[a-z]:/", "", raw)
-        # slugify: keep alnum and dashes
         slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
         return f"file-{slug}"
 
@@ -164,10 +152,13 @@ class MarkdownGenerator:
 
 
 class HTMLGenerator:
-    """Write a minimal HTML that wraps the Markdown (no external libs)."""
+    """Wrap a Markdown file in a minimal HTML scaffold (pre tag)."""
 
     def generate(self, ladom: Dict[str, Any], output_path: str) -> None:
-        md_path = os.path.join(os.path.dirname(output_path), "documentation.md")
+        # Derive the markdown path from the provided HTML path.
+        # e.g., "documentation.technical.html" -> "documentation.technical.md"
+        base, ext = os.path.splitext(output_path)
+        md_path = base + ".md"
         try:
             with open(md_path, "r", encoding="utf-8") as f:
                 md = f.read()
@@ -192,6 +183,5 @@ class HTMLGenerator:
   <pre>{html.escape(md)}</pre>
 </body>
 </html>"""
-
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(html_doc)
