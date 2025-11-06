@@ -346,7 +346,7 @@ pytest tests/ --cov=src --cov-report=html
 
 ## 📄 License
 
-[LICENCE](./LICENSE)
+[LICENSE](./LICENSE)
 
 ---
 

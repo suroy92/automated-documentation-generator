@@ -33,7 +33,8 @@ class ConfigLoader:
             'model': 'qwen2.5-coder:7b',
             'temperature': 0.2,
             'rate_limit_calls_per_minute': 20,
-            'timeout': 120
+            'timeout': 120,
+            'embedding_model': 'all-minilm:l6-v2'
         },
         'cache': {
             'enabled': True,
