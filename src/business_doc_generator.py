@@ -5,10 +5,9 @@ Business-oriented documentation generator.
 - Summarizes the aggregated LADOM into business-friendly sections:
   Executive Summary, Audience, Capabilities, User Journeys, Inputs/Outputs,
   Operations, Security/Privacy, Risks/Assumptions, Glossary, Roadmap.
+- Adds Mermaid diagrams (Architecture + Generate Docs flow).
 - Uses the local Ollama LLM (providers/ollama_client.py) once per project.
 - Writes Markdown to the provided output path.
-
-This module is intentionally self-contained (no extra deps).
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from .providers.ollama_client import LLM
 
 
 def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, Any]:
-    """Produce a compact view of LADOM for the prompt (avoid huge payloads)."""
     out = {
         "project_name": ladom.get("project_name", ""),
         "stats": {"files": 0, "functions": 0, "classes": 0},
@@ -58,7 +56,6 @@ def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, An
 
 
 def _lenient_json(s: str) -> Dict[str, Any]:
-    """Parse JSON, or extract the first {...} block, else fallback."""
     try:
         return json.loads(s)
     except Exception:
@@ -69,7 +66,6 @@ def _lenient_json(s: str) -> Dict[str, Any]:
             return json.loads(m.group(0))
         except Exception:
             pass
-    # Fallback minimal skeleton
     return {
         "executive_summary": "",
         "audience": [],
@@ -98,7 +94,7 @@ class BusinessDocGenerator:
         return f"""
 You are a product/technical writer. Based ONLY on the provided PROJECT STRUCTURE,
 write a concise BUSINESS-FRIENDLY summary in STRICT JSON (no prose outside JSON).
-If a field is unknown, leave it empty — do not guess frameworks or vendors.
+If a field is unknown, leave it empty — do not invent frameworks or vendors.
 
 Return JSON with this schema:
 {{
@@ -110,8 +106,8 @@ Return JSON with this schema:
   "user_journeys": [
      {{"actor":"User/Stakeholder","steps":["Step 1","Step 2","Success criteria"]}}
   ],
-  "inputs": ["what the app consumes (files, paths, codebase)"],
-  "outputs": ["what the app produces (markdown, html, artifacts)"],
+  "inputs": ["what the app consumes"],
+  "outputs": ["what the app produces"],
   "operations": {{
      "how_to_run": ["command or menu sequence"],
      "config_keys": ["KEY=meaning"],
@@ -120,7 +116,7 @@ Return JSON with this schema:
   }},
   "security": {{
      "data_flow": "where data goes",
-     "pii": "does it process PII? how to avoid?",
+     "pii": "PII considerations",
      "storage": "cache / output locations",
      "llm_usage": "local model vs remote"
   }},
@@ -139,7 +135,7 @@ PROJECT STRUCTURE (compact LADOM):
         raw = self.llm.generate(system="", prompt=self._prompt(compact), temperature=0.2)
         data = _lenient_json(raw)
 
-        # Mild sanitation
+        # Normalize shapes
         if not isinstance(data.get("audience"), list):
             data["audience"] = [str(data.get("audience") or "")] if data.get("audience") else []
         for k in ("goals", "kpis", "inputs", "outputs", "risks", "assumptions", "roadmap"):
@@ -186,7 +182,63 @@ PROJECT STRUCTURE (compact LADOM):
 
         return data
 
-    def generate_markdown(self, project_name: str, sections: Dict[str, Any], output_md_path: str) -> None:
+    # ------- Mermaid helpers -------
+
+    def _arch_mermaid(self, ladom: Dict[str, Any]) -> str:
+        files = ladom.get("files") or []
+        langs = set()
+        for f in files:
+            for sym in (f.get("functions") or []):
+                if sym.get("language_hint"):
+                    langs.add(sym["language_hint"])
+            for c in (f.get("classes") or []):
+                for m in (c.get("methods") or []):
+                    if m.get("language_hint"):
+                        langs.add(m["language_hint"])
+        has_py = "python" in langs
+        has_js = "javascript" in langs
+        has_java = "java" in langs
+
+        parts = ["flowchart LR"]
+        parts.append("  U[User / CLI] --> S[Scanner]")
+        parts.append("  S -->|files| A[Analyzers]")
+        if has_py:
+            parts.append("  A --> PY[Python Analyzer]")
+        if has_js:
+            parts.append("  A --> JS[JavaScript Analyzer]")
+        if has_java:
+            parts.append("  A --> JV[Java Analyzer]")
+        parts.append("  A --> L[LADOM Builder]")
+        parts.append("  L --> C[Cache]")
+        parts.append("  L --> R[Rate Limiter]")
+        parts.append("  L --> M[Local LLM (Ollama)]")
+        parts.append("  M --> TG[Technical Markdown/HTML]")
+        parts.append("  M --> BG[Business Markdown/HTML]")
+        parts.append("  C -. improves speed .- M")
+        return "\n".join(parts)
+
+    def _flow_mermaid(self) -> str:
+        return """sequenceDiagram
+  autonumber
+  participant User
+  participant CLI as DocGen CLI
+  participant Scan as Scanner
+  participant AZ as Analyzers
+  participant LLM as Local LLM (Ollama)
+  participant Out as Renderers
+
+  User->>CLI: Select project path & doc type
+  CLI->>Scan: Traverse directories (excludes)
+  Scan->>AZ: Send code snippets per file
+  AZ->>LLM: Request structured doc hints (JSON)
+  LLM-->>AZ: Summaries, params, returns, notes
+  AZ->>Out: Build LADOM (project-wide)
+  Out-->>User: Technical.md/html + Business.md/html
+"""
+
+    # ------- Markdown rendering -------
+
+    def generate_markdown(self, project_name: str, sections: Dict[str, Any], output_md_path: str, ladom: Dict[str, Any]) -> None:
         lines: List[str] = []
         lines.append(f"# {project_name} — Business Overview\n")
         if sections.get("executive_summary"):
@@ -198,11 +250,8 @@ PROJECT STRUCTURE (compact LADOM):
                 lines.append(f"- {a}")
             lines.append("")
 
-        block_specs: List[Tuple[str, Any, Any]] = [
-            ("Goals", sections.get("goals"), None),
-            ("KPIs", sections.get("kpis"), None),
-        ]
-        for title, items, _ in block_specs:
+        for title in ("Goals", "KPIs"):
+            items = sections.get(title.lower(), [])
             if items:
                 lines.append(f"## {title}\n")
                 for i in items:
@@ -212,19 +261,31 @@ PROJECT STRUCTURE (compact LADOM):
         if sections.get("capabilities"):
             lines.append("## Capabilities\n")
             for c in sections["capabilities"]:
-                if c["name"] or c["desc"]:
-                    lines.append(f"- **{c['name']}** — {c['desc']}")
+                if c.get("name") or c.get("desc"):
+                    lines.append(f"- **{c.get('name','')}** — {c.get('desc','')}")
             lines.append("")
 
         if sections.get("user_journeys"):
             lines.append("## User Journeys\n")
             for j in sections["user_journeys"]:
                 lines.append(f"**{j.get('actor','User')}**")
-                steps = j.get("steps") or []
-                for idx, s in enumerate(steps, 1):
+                for idx, s in enumerate(j.get("steps") or [], 1):
                     lines.append(f"  {idx}. {s}")
                 lines.append("")
             lines.append("")
+
+        # Diagrams
+        lines.append("## Diagrams\n")
+        lines.append("**Architecture Overview**")
+        lines.append("```mermaid")
+        lines.append(self._arch_mermaid(ladom))
+        lines.append("```")
+        lines.append("")
+        lines.append("**Generate Documentation Flow**")
+        lines.append("```mermaid")
+        lines.append(self._flow_mermaid())
+        lines.append("```")
+        lines.append("")
 
         if sections.get("inputs") or sections.get("outputs"):
             lines.append("## Inputs & Outputs\n")
@@ -299,8 +360,7 @@ PROJECT STRUCTURE (compact LADOM):
         with open(output_md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines).strip() + "\n")
 
-    # Public: one-shot convenience
     def generate(self, ladom: Dict[str, Any], output_md_path: str) -> None:
         project_name = ladom.get("project_name") or "Project"
         sections = self.synthesize_sections(ladom)
-        self.generate_markdown(project_name, sections, output_md_path)
+        self.generate_markdown(project_name, sections, output_md_path, ladom)

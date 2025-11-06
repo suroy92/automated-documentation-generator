@@ -1,10 +1,9 @@
-# src/doc_generator.py
-
+# src/technical_doc_generator.py
 """
-Richer Technical Markdown + simple HTML wrapper.
+Technical Markdown + HTML rendering with Mermaid support.
 
-- Adds Overview, TOC, File summaries; anchors are slugified.
-- HTMLGenerator now derives the Markdown path from the provided HTML path.
+- Technical Markdown (overview, TOC, file/class/method listings)
+- HTML conversion (Python-Markdown) with Mermaid diagrams support
 """
 
 from __future__ import annotations
@@ -13,6 +12,9 @@ from typing import Any, Dict, List, Optional
 import os
 import re
 import html
+import pathlib
+
+import markdown  # Python-Markdown for MD -> HTML
 
 
 @dataclass
@@ -152,18 +154,41 @@ class MarkdownGenerator:
 
 
 class HTMLGenerator:
-    """Wrap a Markdown file in a minimal HTML scaffold (pre tag)."""
+    """Convert Markdown to HTML and render Mermaid diagrams."""
+
+    def _md_to_html(self, md_text: str) -> str:
+        html_text = markdown.markdown(
+            md_text,
+            extensions=["fenced_code", "tables", "toc"],
+            output_format="html5",
+        )
+        # Turn ```mermaid``` blocks into <div class="mermaid">…</div>
+        html_text = re.sub(
+            r'<pre><code class="language-mermaid">(.*?)</code></pre>',
+            lambda m: f'<div class="mermaid">{html.unescape(m.group(1))}</div>',
+            html_text,
+            flags=re.DOTALL,
+        )
+        return html_text
 
     def generate(self, ladom: Dict[str, Any], output_path: str) -> None:
-        # Derive the markdown path from the provided HTML path.
-        # e.g., "documentation.technical.html" -> "documentation.technical.md"
-        base, ext = os.path.splitext(output_path)
+        base, _ = os.path.splitext(output_path)
         md_path = base + ".md"
         try:
             with open(md_path, "r", encoding="utf-8") as f:
                 md = f.read()
         except Exception:
             md = "# Documentation\n\n(Unable to load Markdown.)"
+
+        body = self._md_to_html(md)
+
+        # Prefer local mermaid if present under ./assets/
+        assets_dir = os.path.join(os.path.dirname(output_path), "assets")
+        local_mermaid = os.path.join(assets_dir, "mermaid.min.js")
+        if os.path.exists(local_mermaid):
+            mermaid_src = "assets/mermaid.min.js"
+        else:
+            mermaid_src = "https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"
 
         html_doc = f"""<!doctype html>
 <html lang="en">
@@ -177,10 +202,19 @@ class HTMLGenerator:
     code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
     h1, h2, h3, h4 {{ margin-top: 1.8em; }}
     a {{ color: #005ad6; text-decoration: none; }}
+    .mermaid {{ background: #0b1020; color: #e0e6ff; padding: 8px; border-radius: 8px; }}
   </style>
+  <script src="{mermaid_src}"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {{
+      if (window.mermaid) {{
+        mermaid.initialize({{ startOnLoad: true, securityLevel: 'strict' }});
+      }}
+    }});
+  </script>
 </head>
 <body>
-  <pre>{html.escape(md)}</pre>
+{body}
 </body>
 </html>"""
         with open(output_path, "w", encoding="utf-8") as f:

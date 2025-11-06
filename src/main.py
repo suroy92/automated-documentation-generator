@@ -2,7 +2,7 @@
 
 """
 Main orchestration module for the automated documentation generator.
-Now supports an interactive menu:
+Menu:
   1) Technical doc
   2) Business doc
   3) Both (default)
@@ -15,7 +15,7 @@ import os
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Tuple  # <-- added
+from typing import Tuple
 from dotenv import load_dotenv
 from tqdm import tqdm
 
@@ -26,7 +26,7 @@ from .path_validator import PathValidator
 from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
-from .doc_generator import MarkdownGenerator, HTMLGenerator
+from .technical_doc_generator import MarkdownGenerator, HTMLGenerator
 from .ladom_schema import LADOMValidator
 from .providers.ollama_client import LLM, LLMConfig
 from .business_doc_generator import BusinessDocGenerator

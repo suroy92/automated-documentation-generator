@@ -9,6 +9,7 @@ tqdm>=4.65.0
 
 # Template engine
 jinja2>=3.1.2
+markdown>=3.6
 
 # Testing dependencies
 pytest>=7.4.0
