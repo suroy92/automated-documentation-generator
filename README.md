@@ -1,6 +1,3 @@
-Here’s an updated **README.md** based on your current file, adding the interactive **menu** and generating **both Technical and Business docs by default**, plus notes about the new `BusinessDocGenerator`. 
-
-````markdown
 # Automated Documentation Generator (Local — Ollama)
 
 A robust, language-agnostic CLI that scans a project and generates documentation from source code using a Language-Agnostic Document Object Model (LADOM).  
@@ -160,7 +157,7 @@ automated-doc-generator/
 │   ├── cache_manager.py             # Docstring caching
 │   ├── rate_limiter.py              # Rate limiting
 │   ├── path_validator.py            # Path security checks & safe output paths
-│   ├── doc_generator.py             # Technical Markdown/HTML generators
+│   ├── techincal_doc_generator.py   # Technical Markdown/HTML generators
 │   ├── business_doc_generator.py    # NEW: Business doc synthesis (local LLM, single project-level prompt)
 │   ├── providers/
 │   │   └── ollama_client.py         # Local client for Ollama (no external deps)
@@ -173,7 +170,7 @@ automated-doc-generator/
 │   ├── test_ladom_schema.py
 │   ├── test_cache_manager.py
 │   └── test_analyzers.py
-├── config.yml                        # Configuration (or config.yaml)
+├── config.yaml                        # Configuration (or config.yaml)
 ├── requirements.txt                  # Python dependencies
 └── README.md
 ```

@@ -28,11 +28,12 @@ class ConfigLoader:
             'include_toc': True
         },
         'llm': {
-            'model': 'gemini-2.5-flash',
-            'temperature': 0.3,
-            'max_retries': 3,
-            'timeout': 30,
-            'rate_limit_calls_per_minute': 20
+            'provider': 'ollama',
+            'base_url': 'http://localhost:11434',
+            'model': 'qwen2.5-coder:7b',
+            'temperature': 0.2,
+            'rate_limit_calls_per_minute': 20,
+            'timeout': 120
         },
         'cache': {
             'enabled': True,
