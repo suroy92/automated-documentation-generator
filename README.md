@@ -16,6 +16,10 @@ A robust, language-agnostic CLI that scans a project and generates documentation
 - 🔐 **Security-first**: Path validation & forbidden paths
 - ⚙️ **Configurable**: YAML config for model, temperature, rate limits, etc.
 
+**New (Business-Friendly Docs + Menu):**
+- 🗺️ **Business documentation**: Executive Summary, Capabilities, User Journeys, Inputs/Outputs, Operations, Security & Privacy, Risks, Glossary, Roadmap — synthesized from LADOM via the local LLM.
+- 🧭 **Interactive menu**: choose *Technical*, *Business*, or **Both (default)** every run.
+
 ---
 
 ## 🚀 Quick Start
@@ -26,13 +30,15 @@ A robust, language-agnostic CLI that scans a project and generates documentation
   One-time model pull:
   ```bash
   ollama pull qwen2.5-coder:7b
-  ```
+````
 
-**Windows tip:** Keep large model files on a fast NVMe drive
+**Windows tip:** Keep large model files on a fast NVMe drive.
 Open PowerShell and set:
+
 ```powershell
 $env:OLLAMA_MODELS = 'D:\ollama\models'
 ```
+
 Restart the shell and (re)pull models if needed.
 
 ### 2) Install
@@ -51,13 +57,42 @@ No `.env` or API keys required.
 python -m src.main
 ```
 
-You’ll be prompted for the project path to scan. Output is written under `Documentation/` by default.
+You’ll be prompted for the project path to scan and then see a **menu**:
+
+```
+Choose documentation type:
+  1) Technical
+  2) Business
+  3) Both  [default]
+Enter choice [1/2/3]:
+```
+
+Press **Enter** to generate **both** docs (default).
+Outputs are written under the project-specific folder inside `Documentation/` (configurable).
+
+---
+
+## 📄 Outputs
+
+By default, you’ll get **two** documentation sets:
+
+* **Technical**
+
+  * `documentation.technical.md`
+  * `documentation.technical.html`
+
+* **Business**
+
+  * `documentation.business.md`
+  * `documentation.business.html`
+
+The Business doc is stakeholder-friendly (non-technical) and complements the API-style Technical doc.
 
 ---
 
 ## ⚙️ Configuration
 
-Edit **`config.yml`** at the repo root:
+Edit **`config.yml`** (or **`config.yaml`**) at the repo root:
 
 ```yaml
 # Directories to exclude from scanning
@@ -69,7 +104,6 @@ exclude_dirs:
 # Output configuration
 output:
   directory: Documentation
-  format: markdown
 
 # Local LLM configuration
 llm:
@@ -117,27 +151,28 @@ security:
 ```
 automated-doc-generator/
 ├── src/
-│   ├── main.py                  # Main entry point (now initializes local Ollama client)
-│   ├── config_loader.py         # Configuration management
-│   ├── ladom_schema.py          # LADOM schema & validation
-│   ├── cache_manager.py         # Docstring caching
-│   ├── rate_limiter.py          # Rate limiting
-│   ├── path_validator.py        # Path security checks
-│   ├── doc_generator.py         # Markdown/HTML generators
+│   ├── main.py                      # Entry point (interactive menu; generates Technical & Business docs)
+│   ├── config_loader.py             # Configuration management
+│   ├── ladom_schema.py              # LADOM schema & validation
+│   ├── cache_manager.py             # Docstring caching
+│   ├── rate_limiter.py              # Rate limiting
+│   ├── path_validator.py            # Path security checks & safe output paths
+│   ├── techincal_doc_generator.py   # Technical Markdown/HTML generators
+│   ├── business_doc_generator.py    # NEW: Business doc synthesis (local LLM, single project-level prompt)
 │   ├── providers/
-│   │   └── ollama_client.py     # NEW: local client for Ollama (no external deps)
+│   │   └── ollama_client.py         # Local client for Ollama (no external deps)
 │   └── analyzers/
-│       ├── base_analyzer.py     # calls client.generate(...)
-│       ├── py_analyzer.py       # Python analyzer
-│       ├── js_analyzer.py       # JavaScript analyzer
-│       └── java_analyzer.py     # Java analyzer (optional)
+│       ├── base_analyzer.py         # LLM prompt + normalization; caching
+│       ├── py_analyzer.py           # Python analyzer (AST + LLM synthesis)
+│       ├── js_analyzer.py           # JavaScript analyzer (covers constructor/field/prototype patterns)
+│       └── java_analyzer.py         # Java analyzer (optional; uses javalang if installed)
 ├── tests/
 │   ├── test_ladom_schema.py
 │   ├── test_cache_manager.py
 │   └── test_analyzers.py
-├── config.yaml                   # Configuration (local-first)
-├── requirements.txt             # Python dependencies
-└── README.md                    # This file
+├── config.yaml                        # Configuration (or config.yaml)
+├── requirements.txt                  # Python dependencies
+└── README.md
 ```
 
 ---
@@ -156,6 +191,11 @@ Scanning project: /path/to/your/project
 Found 23 files to analyze
 Analyzing files: 100%|███████████████████████████████| 23/23 [00:19<00:00]
 
+Choose documentation type:
+  1) Technical
+  2) Business
+  3) Both  [default]
+
 Generating documentation...
 
 ============================================================
@@ -166,7 +206,7 @@ Cache statistics:
   - Total entries: 18
   - Cache file: .docstring_cache.json
 
-API calls made: 5
+Local LLM calls made: 5
 ```
 
 ---
@@ -174,10 +214,10 @@ API calls made: 5
 ## 🧱 Architecture Overview
 
 1. **File scanning** → respects `exclude_dirs`
-2. **Language analyzers** → parse ASTs and extract symbols
+2. **Language analyzers** → parse AST/heuristics and extract symbols
 3. **LADOM build** → normalized, language-agnostic representation
 4. **LLM docstrings** → prompts a local model for concise descriptions
-5. **Renderers** → Markdown and HTML outputs
+5. **Renderers** → Technical & Business outputs (Markdown and HTML)
 
 **LADOM (example)**
 
@@ -203,6 +243,22 @@ API calls made: 5
 
 ---
 
+## 🗺️ Business Documentation (What it includes)
+
+* **Executive Summary** — 2–4 sentence elevator pitch
+* **Audience, Goals, KPIs** — who it’s for and how success is measured
+* **Capabilities** — grouped features in plain language
+* **User Journeys** — stepwise flows for users/stakeholders
+* **Inputs & Outputs** — what the app consumes/produces
+* **Operations** — how to run, config keys, logs, troubleshooting
+* **Security & Privacy** — data flow, PII stance, storage, LLM usage
+* **Risks & Assumptions** — constraints and known gaps
+* **Glossary & Roadmap** — shared vocabulary and what’s next
+
+All of this is produced locally via the Ollama model, using only the aggregated LADOM as context.
+
+---
+
 ## 🛠️ Extending
 
 ### Add a new analyzer
@@ -225,7 +281,7 @@ Register it in `src/main.py` to include files with your extension.
 
 ### Custom output formats
 
-Add a generator in `src/doc_generator.py` and call it in `generate_documentation(...)`.
+Add a generator in `src/doc_generator.py` or a parallel renderer, and call it in `src/main.py`.
 
 ---
 
@@ -242,8 +298,8 @@ Add a generator in `src/doc_generator.py` and call it in `generate_documentation
 
 **Slow generations**
 
-* Reduce context in prompts; keep to essential code snippets.
-* Ensure only 1–2 concurrent *LLM* calls while scanning remains parallel.
+* Reduce prompt context; keep essential code snippets only.
+* Keep LLM calls modest while enabling parallel file scanning.
 * On Windows/NVIDIA, set “Prefer maximum performance” for Python in the NVIDIA Control Panel.
 
 **Nothing analyzed**
@@ -256,7 +312,7 @@ Add a generator in `src/doc_generator.py` and call it in `generate_documentation
 
 * All inference is local; nothing is sent to third-party services.
 * `security.forbidden_paths` ensures secrets (e.g., `.env`, keys) are never read or sent.
-* Cache file (`.docstring_cache.json`) is local and ignored by VCS (add to `.gitignore` if not already).
+* Cache file (`.docstring_cache.json`) is local and can be ignored by VCS (add to `.gitignore`).
 
 ---
 
@@ -290,7 +346,7 @@ pytest tests/ --cov=src --cov-report=html
 
 ## 📄 License
 
-[LICENCE](./LICENSE)
+[LICENSE](./LICENSE)
 
 ---
 

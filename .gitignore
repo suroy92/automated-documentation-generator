@@ -1,16 +1,21 @@
 # Environment variables
 .env
-.env.example
+# Keep .env.example tracked as a template
+# (remove the next line if it's currently ignored)
+#!.env.example
 
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyd
 *$py.class
-*.so
 .Python
+
+# Build & packaging
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -29,9 +34,12 @@ MANIFEST
 venv/
 ENV/
 env/
-.venv
+.venv/
 
-# IDE
+# Node (JS/TS)
+node_modules/
+
+# IDE / OS
 .vscode/
 .idea/
 *.swp
@@ -47,19 +55,13 @@ htmlcov/
 .mypy_cache/
 .hypothesis/
 
-# Documentation output
+# Documentation output (generated)
 Documentation/
 
-# Cache files
+# Cache / logs
 .docstring_cache.json
 *.log
 docgen.log
 
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints
-
-# Distribution / packaging
-.Python
-build/
-dist/
-*.egg-info/
