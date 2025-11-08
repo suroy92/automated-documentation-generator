@@ -30,7 +30,7 @@ A robust, language-agnostic CLI that scans a project and generates documentation
   One-time model pull:
   ```bash
   ollama pull qwen2.5-coder:7b
-````
+  ````
 
 **Windows tip:** Keep large model files on a fast NVMe drive.
 Open PowerShell and set:
