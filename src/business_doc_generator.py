@@ -1,24 +1,32 @@
 # src/business_doc_generator.py
 """
-Business-oriented documentation generator.
+Business-oriented documentation generator (project-centric diagrams).
 
-- Summarizes the aggregated LADOM into business-friendly sections:
-  Executive Summary, Audience, Capabilities, User Journeys, Inputs/Outputs,
-  Operations, Security/Privacy, Risks/Assumptions, Glossary, Roadmap.
-- Adds Mermaid diagrams (Architecture + Generate Docs flow).
-- Uses the local Ollama LLM (providers/ollama_client.py) once per project.
-- Writes Markdown to the provided output path.
+What it does:
+- Summarizes LADOM into stakeholder-friendly sections (Executive Summary, etc.)
+- Renders dynamic Mermaid diagrams for the *scanned project*:
+  1) Project Structure (flowchart with subgraphs per top-level folder)
+  2) Language Mix (pie)
+  3) Top Classes map (optional; capped)
+- Keeps a short Appendix diagram showing how *this doc tool* works.
+
+No external services; uses the local LLM (providers/ollama_client.py) once.
 """
 
 from __future__ import annotations
+
 import json
 import re
+from collections import Counter
 from typing import Any, Dict, List, Tuple
 
 from .providers.ollama_client import LLM
 
 
+# ------------------------- LADOM helpers -------------------------
+
 def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, Any]:
+    """Produce a compact view of LADOM for prompting (avoid huge payloads)."""
     out = {
         "project_name": ladom.get("project_name", ""),
         "stats": {"files": 0, "functions": 0, "classes": 0},
@@ -56,6 +64,7 @@ def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, An
 
 
 def _lenient_json(s: str) -> Dict[str, Any]:
+    """Parse JSON; if it fails, extract the first {...} block; else return a skeleton."""
     try:
         return json.loads(s)
     except Exception:
@@ -83,6 +92,8 @@ def _lenient_json(s: str) -> Dict[str, Any]:
         "roadmap": [],
     }
 
+
+# ------------------------- Business sections -------------------------
 
 class BusinessDocGenerator:
     """Synthesizes business-friendly documentation and writes Markdown."""
@@ -182,42 +193,162 @@ PROJECT STRUCTURE (compact LADOM):
 
         return data
 
-    # ------- Mermaid helpers -------
+    # ------------------------- Diagram helpers -------------------------
 
-    def _arch_mermaid(self, ladom: Dict[str, Any]) -> str:
+    def _language_of_path(self, path: str) -> str:
+        p = (path or "").lower()
+        if p.endswith(".py"):
+            return "Python"
+        if p.endswith(".js") or p.endswith(".mjs") or p.endswith(".cjs") or p.endswith(".ts"):
+            return "JavaScript"
+        if p.endswith(".java"):
+            return "Java"
+        return "Other"
+
+    def _split_segments(self, path: str) -> List[str]:
+        """Normalize to forward slashes and split; drop Windows drive if present."""
+        s = (path or "").replace("\\", "/")
+        segs = [seg for seg in s.split("/") if seg]
+        if segs and segs[0].endswith(":"):  # e.g., 'C:'
+            segs = segs[1:]
+        return segs
+
+    def _common_prefix(self, list_of_seg_lists: List[List[str]]) -> List[str]:
+        if not list_of_seg_lists:
+            return []
+        prefix: List[str] = []
+        for i in range(min(len(s) for s in list_of_seg_lists)):
+            col = {s[i] for s in list_of_seg_lists}
+            if len(col) == 1:
+                prefix.append(next(iter(col)))
+            else:
+                break
+        return prefix
+
+    def _rel_segments(self, path: str, common_prefix: List[str]) -> List[str]:
+        segs = self._split_segments(path)
+        return segs[len(common_prefix):] if len(segs) >= len(common_prefix) else segs
+
+    def _safe_id(self, *parts: str) -> str:
+        raw = "_".join(parts)
+        return re.sub(r"[^a-zA-Z0-9_]", "_", raw)
+
+    def _short_rel_label(self, rel_segs: List[str], keep: int = 3) -> str:
+        if not rel_segs:
+            return "(root)"
+        if len(rel_segs) <= keep:
+            return "/".join(rel_segs)
+        return ".../" + "/".join(rel_segs[-keep:])
+
+    def _esc_label(self, s: str, max_len: int = 80) -> str:
+        """Escape quotes/newlines for Mermaid labels and cap length."""
+        s = (s or "")
+        s = s.replace('"', '\\"')                          # escape double quotes
+        s = re.sub(r"[\r\n\t]+", " ", s)                   # strip newlines/tabs
+        s = re.sub(r"\s{2,}", " ", s).strip()
+        return s[:max_len]
+
+    # ------------------------- Project-centric Mermaid -------------------------
+
+    def _project_structure_mermaid(
+        self, ladom: Dict[str, Any], *, max_dirs: int = 8, max_files_per_dir: int = 10
+    ) -> str:
+        """
+        Build a flowchart with subgraphs per *top-level* directory under the project root,
+        and file nodes within each. Caps dirs/files to keep diagrams readable.
+        """
         files = ladom.get("files") or []
-        langs = set()
+        if not files:
+            return "flowchart TD\n  A[No files]"
+
+        # Compute common root prefix across all file paths
+        all_segs = [self._split_segments(f.get("path", "")) for f in files]
+        common_prefix = self._common_prefix(all_segs)
+
+        # Group files by first relative segment (= top-level folder), else "(root)"
+        groups: Dict[str, List[Dict[str, Any]]] = {}
         for f in files:
-            for sym in (f.get("functions") or []):
-                if sym.get("language_hint"):
-                    langs.add(sym["language_hint"])
-            for c in (f.get("classes") or []):
-                for m in (c.get("methods") or []):
-                    if m.get("language_hint"):
-                        langs.add(m["language_hint"])
-        has_py = "python" in langs
-        has_js = "javascript" in langs
-        has_java = "java" in langs
+            rel = self._rel_segments(f.get("path", ""), common_prefix)
+            top = rel[0] if len(rel) > 1 else "(root)"
+            groups.setdefault(top, []).append({"rel": rel, "raw": f})
 
-        parts = ["flowchart LR"]
-        parts.append("  U[User / CLI] --> S[Scanner]")
-        parts.append("  S -->|files| A[Analyzers]")
-        if has_py:
-            parts.append("  A --> PY[Python Analyzer]")
-        if has_js:
-            parts.append("  A --> JS[JavaScript Analyzer]")
-        if has_java:
-            parts.append("  A --> JV[Java Analyzer]")
-        parts.append("  A --> L[LADOM Builder]")
-        parts.append("  L --> C[Cache]")
-        parts.append("  L --> R[Rate Limiter]")
-        parts.append("  L --> M[Local LLM (Ollama)]")
-        parts.append("  M --> TG[Technical Markdown/HTML]")
-        parts.append("  M --> BG[Business Markdown/HTML]")
-        parts.append("  C -. improves speed .- M")
-        return "\n".join(parts)
+        # Sort groups by size and cap
+        ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        if len(ordered) > max_dirs:
+            head = ordered[: max_dirs - 1]
+            tail_count = sum(len(v) for _, v in ordered[max_dirs - 1 :])
+            ordered = head + [("…other", [{"rel": ["(many)"], "raw": {"path": f"... {tail_count} files"}}])]
 
-    def _flow_mermaid(self) -> str:
+        lines: List[str] = ["flowchart TD"]
+        proj = ladom.get("project_name") or "Project"
+        root_id = self._safe_id("ROOT", proj)
+        lines.append(f'  {root_id}[{self._esc_label(proj)}]')
+
+        for top, entries in ordered:
+            sg_id = self._safe_id("SG", top)
+            lines.append(f"  subgraph {sg_id}[{self._esc_label(top)}]")
+            # list up to max_files_per_dir
+            for i, e in enumerate(entries[:max_files_per_dir], 1):
+                rel_label = self._short_rel_label(e["rel"], keep=3)
+                rel_label = self._esc_label(rel_label)
+                nid = self._safe_id("F", top, str(i))
+                lines.append(f'    {nid}["{rel_label}"]')
+                lines.append(f"    {root_id} --> {nid}")
+            if len(entries) > max_files_per_dir:
+                more = len(entries) - max_files_per_dir
+                mid = self._safe_id("MORE", top)
+                lines.append(f'    {mid}["{self._esc_label("… +" + str(more) + " more")}"]')
+                lines.append(f"    {root_id} --> {mid}")
+            lines.append("  end")
+        return "\n".join(lines)
+
+    def _language_pie_mermaid(self, ladom: Dict[str, Any]) -> str:
+        files = ladom.get("files") or []
+        c = Counter(self._language_of_path(f.get("path", "")) for f in files)
+        if not c:
+            return "pie title Language Mix\n  \"Unknown\" : 1"
+        lines = ["pie title Language Mix"]
+        for lang, count in c.items():
+            lines.append(f'  "{self._esc_label(lang)}" : {int(count)}')
+        return "\n".join(lines)
+
+    def _top_classes_mermaid(self, ladom: Dict[str, Any], *, limit: int = 12) -> str | None:
+        """Optional class map: top classes by method count; connects class nodes to their file."""
+        files = ladom.get("files") or []
+        classes: List[Tuple[str, int, str]] = []  # (name, method_count, rel_label)
+
+        all_segs = [self._split_segments(f.get("path", "")) for f in files]
+        common_prefix = self._common_prefix(all_segs)
+
+        for f in files:
+            rel = self._rel_segments(f.get("path", ""), common_prefix)
+            rel_label = self._short_rel_label(rel, keep=3)
+            for cls in (f.get("classes") or []):
+                name = cls.get("name") or ""
+                mcount = len(cls.get("methods") or [])
+                if name:
+                    classes.append((f"{name}", mcount, rel_label))
+
+        if not classes:
+            return None
+
+        classes.sort(key=lambda t: (-t[1], t[0]))
+        classes = classes[:limit]
+
+        lines = ["flowchart LR", "  subgraph Classes (top)"]
+        for i, (name, mcount, rel_label) in enumerate(classes, 1):
+            cid = self._safe_id("C", name, str(i))
+            fid = self._safe_id("CF", rel_label, str(i))
+            nm = self._esc_label(name)
+            rl = self._esc_label(rel_label)
+            lines.append(f'    {cid}["{nm} ({mcount})"]')
+            lines.append(f'    {fid}["{rl}"]')
+            lines.append(f"    {cid} --> {fid}")
+        lines.append("  end")
+        return "\n".join(lines)
+
+    def _docgen_flow_mermaid(self) -> str:
+        """Appendix: how this documentation tool works (kept concise)."""
         return """sequenceDiagram
   autonumber
   participant User
@@ -227,18 +358,23 @@ PROJECT STRUCTURE (compact LADOM):
   participant LLM as Local LLM (Ollama)
   participant Out as Renderers
 
-  User->>CLI: Select project path & doc type
-  CLI->>Scan: Traverse directories (excludes)
-  Scan->>AZ: Send code snippets per file
-  AZ->>LLM: Request structured doc hints (JSON)
-  LLM-->>AZ: Summaries, params, returns, notes
-  AZ->>Out: Build LADOM (project-wide)
-  Out-->>User: Technical.md/html + Business.md/html
+  User->>CLI: Choose project path & doc type
+  CLI->>Scan: Walk files (apply excludes)
+  Scan->>AZ: Symbols per file -> LADOM
+  AZ->>LLM: Summaries/normalization (local)
+  LLM-->>AZ: JSON hints (no external calls)
+  AZ->>Out: Technical.md/html & Business.md/html
 """
 
-    # ------- Markdown rendering -------
+    # ------------------------- Markdown rendering -------------------------
 
-    def generate_markdown(self, project_name: str, sections: Dict[str, Any], output_md_path: str, ladom: Dict[str, Any]) -> None:
+    def generate_markdown(
+        self,
+        project_name: str,
+        sections: Dict[str, Any],
+        output_md_path: str,
+        ladom: Dict[str, Any],
+    ) -> None:
         lines: List[str] = []
         lines.append(f"# {project_name} — Business Overview\n")
         if sections.get("executive_summary"):
@@ -274,18 +410,28 @@ PROJECT STRUCTURE (compact LADOM):
                 lines.append("")
             lines.append("")
 
-        # Diagrams
+        # ----- Project-centric diagrams -----
         lines.append("## Diagrams\n")
-        lines.append("**Architecture Overview**")
+
+        lines.append("**Project Structure**")
         lines.append("```mermaid")
-        lines.append(self._arch_mermaid(ladom))
+        lines.append(self._project_structure_mermaid(ladom))
         lines.append("```")
         lines.append("")
-        lines.append("**Generate Documentation Flow**")
+
+        lines.append("**Language Mix**")
         lines.append("```mermaid")
-        lines.append(self._flow_mermaid())
+        lines.append(self._language_pie_mermaid(ladom))
         lines.append("```")
         lines.append("")
+
+        cls_map = self._top_classes_mermaid(ladom)
+        if cls_map:
+            lines.append("**Top Classes (by methods)**")
+            lines.append("```mermaid")
+            lines.append(cls_map)
+            lines.append("```")
+            lines.append("")
 
         if sections.get("inputs") or sections.get("outputs"):
             lines.append("## Inputs & Outputs\n")
@@ -357,9 +503,17 @@ PROJECT STRUCTURE (compact LADOM):
                 lines.append(f"- {r}")
             lines.append("")
 
+        # Appendix: how this doc tool works (kept brief)
+        lines.append("## Appendix — How this documentation was generated\n")
+        lines.append("```mermaid")
+        lines.append(self._docgen_flow_mermaid())
+        lines.append("```")
+        lines.append("")
+
         with open(output_md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines).strip() + "\n")
 
+    # Public API: one-shot convenience
     def generate(self, ladom: Dict[str, Any], output_md_path: str) -> None:
         project_name = ladom.get("project_name") or "Project"
         sections = self.synthesize_sections(ladom)
