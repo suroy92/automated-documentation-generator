@@ -19,10 +19,15 @@ Environment overrides:
 
 from __future__ import annotations
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, List, Optional
+import urllib.error
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,8 +55,9 @@ class LLM:
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        max_retries: int = 3,
     ) -> str:
-        final_prompt = f"{system.strip()}\n\n{prompt.strip()}".strip() if system else prompt.strip()
+        final_prompt = f"{system.strip()}\n\n{prompt.strip()}" if system else prompt.strip()
         payload: dict[str, Any] = {
             "model": self.model,
             "prompt": final_prompt,
@@ -59,17 +65,65 @@ class LLM:
             "options": {"temperature": float(self.temperature if temperature is None else temperature)},
         }
         if max_tokens is not None:
-            # Supported by some models/endpoints as num_predict
             payload["options"]["num_predict"] = int(max_tokens)
 
-        req = Request(
-            f"{self.base}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        with urlopen(req, timeout=self.timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return data.get("response", "")
+        for attempt in range(max_retries):
+            try:
+                req = Request(
+                    f"{self.base}/api/generate",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(req, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data.get("response", "")
+
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logger.warning(f"Rate limited, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    raise RuntimeError(f"Rate limit exceeded after {max_retries} attempts") from e
+                elif 400 <= e.code < 500:
+                    raise RuntimeError(f"HTTP {e.code}: {e.reason}") from e
+                elif 500 <= e.code < 600:
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        logger.warning(f"Server error {e.code}, retrying in {wait_time}s")
+                        time.sleep(wait_time)
+                        continue
+                    raise RuntimeError(f"Server error after {max_retries} attempts") from e
+
+            except urllib.error.URLError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Connection error, retrying in {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError(f"Failed to connect to Ollama after {max_retries} attempts") from e
+
+            except (TimeoutError, ConnectionResetError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Timeout/connection reset, retrying in {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError(f"Timeout after {max_retries} attempts") from e
+
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise RuntimeError(f"Failed to decode Ollama response: {e}") from e
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Unexpected error, retrying in {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError(f"Failed after {max_retries} attempts: {e}") from e
+
+        raise RuntimeError("Unknown error in LLM request")
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         if not self.embedding_model:

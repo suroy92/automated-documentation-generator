@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 import hashlib
 import json
 import logging
+import os
 import re
 from typing import Optional, Dict, Any, Tuple, List
 
@@ -28,6 +29,47 @@ logger = logging.getLogger(__name__)
 
 def _hashtext(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _sanitize_code_for_llm(code: str, max_length: int = 50000) -> str:
+    """
+    Sanitize code snippets before sending to LLM to prevent prompt injection.
+
+    Args:
+        code: Raw code snippet
+        max_length: Maximum allowed character count
+
+    Returns:
+        Sanitized code snippet safe for LLM prompts
+    """
+    if not code:
+        return ""
+
+    # Remove potential prompt injection patterns
+    dangerous_patterns = [
+        r"\\b(?:ignore|reset|reset\\s+chat)\\b",
+        r"\\b(?:system|assistant|user)\\s*:\\s*",
+        r"<<\\|.*?>>",  # Heredoc patterns
+        r"`[^`]*`[^`]*`",  # Triple backticks with injection
+        r"\\$\\{[^}]*\\}",  # Shell variables
+        r"\\$\\([^)]*\\)",  # Command substitution
+    ]
+
+    sanitized = code
+    for pattern in dangerous_patterns:
+        sanitized = re.sub(pattern, "", sanitized, flags=re.IGNORECASE)
+
+    # Remove control characters except newlines and tabs
+    sanitized = "".join(c for c in sanitized if c.isprintable() or c in "\n\t")
+
+    # Enforce length limits
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "\n... [truncated due to length]"
+
+    # Strip excessive whitespace
+    sanitized = "\n".join(line.strip() for line in sanitized.split("\n"))
+
+    return sanitized
 
 
 def _to_text(value: Any) -> str:
@@ -272,14 +314,19 @@ Return STRICT JSON only with this schema:
                     data = json.loads(cached)
                     data = self._normalize_details(data)
                     return self._format_google_style_docstring(data), data
-                except Exception:
-                    pass
+                except json.JSONDecodeError:
+                    logger.debug(f"Cache entry corrupted for {ck[:8]}..., will regenerate")
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Failed to parse cached data: {e}")
 
         if self.rate_limiter:
             self.rate_limiter.wait_if_needed()
 
         logger.info(f"Generating structured doc for `{node_name}` using local LLM")
-        prompt = self._create_json_prompt(code_snippet, context=context)
+
+        # Sanitize code snippet to prevent prompt injection
+        safe_snippet = _sanitize_code_for_llm(code_snippet)
+        prompt = self._create_json_prompt(safe_snippet, context=context)
         try:
             raw = self.client.generate(system="", prompt=prompt, temperature=0.2)
             details = self._parse_json_lenient(raw)
@@ -298,8 +345,30 @@ Return STRICT JSON only with this schema:
 
     # --- I/O helpers ----------------------------------------------------------
 
-    def _safe_read_file(self, file_path: str) -> Optional[str]:
+    def _safe_read_file(self, file_path: str, max_size_mb: int = 10) -> Optional[str]:
+        """
+        Safely read a file with size limits to prevent memory exhaustion.
+
+        Args:
+            file_path: Path to file to read
+            max_size_mb: Maximum file size in megabytes (default: 10MB)
+
+        Returns:
+            File contents as string, or None if file is too large or read fails
+        """
         try:
+            # Check file size before reading
+            file_size = os.path.getsize(file_path)
+            max_size_bytes = max_size_mb * 1024 * 1024  # Convert MB to bytes
+
+            if file_size > max_size_bytes:
+                logger.warning(
+                    f"File {file_path} exceeds size limit ({max_size_mb}MB), skipping. "
+                    f"Actual size: {file_size / (1024*1024):.2f}MB"
+                )
+                return None
+
+            # Read file with progress tracking for large files
             with open(file_path, "r", encoding="utf-8") as f:
                 return f.read()
         except UnicodeDecodeError:
@@ -307,12 +376,12 @@ Return STRICT JSON only with this schema:
             try:
                 with open(file_path, "r", encoding="latin-1") as f:
                     return f.read()
-            except Exception as e:
+            except (OSError, IOError) as e:
                 logger.error(f"Failed to read {file_path}: {e}")
                 return None
         except FileNotFoundError:
             logger.error(f"File not found: {file_path}")
             return None
-        except Exception as e:
+        except (OSError, IOError) as e:
             logger.error(f"Unexpected error while reading {file_path}: {e}")
             return None

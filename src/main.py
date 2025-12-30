@@ -183,7 +183,12 @@ def main():
     path_validator = PathValidator(config.get_forbidden_paths())
     if not path_validator.validate_project_path(project_path):
         logger.error(f"Invalid or forbidden project path: {project_path}")
-        print("Error: Invalid project path or access denied")
+        print("\nError: Invalid project path or access denied")
+        print("Please ensure:")
+        print("  - The path exists and is a valid directory")
+        print("  - You have read permissions for this directory")
+        print("  - The path doesn't contain system directories (e.g., /etc, /sys)")
+        print("  - The path doesn't contain path traversal sequences (..)")
         return
 
     llm_client = initialize_llm_client(config)

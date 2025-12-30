@@ -42,30 +42,45 @@ class PathValidator:
             True if path is safe, False otherwise
         """
         try:
+            original_path = path
+            
+            # STRICT: Reject ANY path with traversal patterns immediately
+            if '..' in path or '../' in path or '..\\' in path or '%2e%2e' in path.lower():
+                logger.error(f"Path traversal detected and rejected: {original_path}")
+                return False
+            
             # Get absolute path
             abs_path = os.path.abspath(os.path.expanduser(path))
             
             # Check if path exists
             if not os.path.exists(abs_path):
-                logger.warning(f"Path does not exist: {path}")
+                logger.warning(f"Path does not exist: {original_path}")
                 return False
             
-            # Check against forbidden paths
+            # Resolve symlinks to prevent symlink-based attacks
+            real_path = os.path.realpath(abs_path)
+            
+            # Check against forbidden paths (use both abs_path and real_path)
             for forbidden in self.forbidden_paths:
-                if abs_path.startswith(forbidden):
-                    logger.error(f"Access denied to forbidden path: {path}")
+                if abs_path.startswith(forbidden) or real_path.startswith(forbidden):
+                    logger.error(f"Access denied to forbidden path: {original_path}")
                     return False
             
-            # Check for path traversal attempts
-            if '..' in path.split(os.sep):
-                logger.warning(f"Potential path traversal detected: {path}")
-                # Allow if resolved path is still safe
-                return not any(abs_path.startswith(forbidden) 
-                             for forbidden in self.forbidden_paths)
+            # Ensure resolved path doesn't escape its parent through symlinks
+            real_parent = os.path.dirname(real_path) or os.path.dirname(abs_path)
+            if real_parent:
+                try:
+                    common = os.path.commonpath([abs_path, real_path])
+                    if not common.startswith(real_parent) and real_path != abs_path:
+                        logger.error(f"Symlink traversal detected and rejected: {original_path}")
+                        return False
+                except (ValueError, OSError):
+                    logger.error(f"Invalid path comparison for: {original_path}")
+                    return False
             
             return True
             
-        except Exception as e:
+        except (OSError, ValueError) as e:
             logger.error(f"Error validating path {path}: {e}")
             return False
     
