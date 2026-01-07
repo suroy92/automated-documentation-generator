@@ -157,8 +157,14 @@ automated-doc-generator/
 │   ├── cache_manager.py             # Docstring caching
 │   ├── rate_limiter.py              # Rate limiting
 │   ├── path_validator.py            # Path security checks & safe output paths
-│   ├── techincal_doc_generator.py   # Technical Markdown/HTML generators
-│   ├── business_doc_generator.py    # NEW: Business doc synthesis (local LLM, single project-level prompt)
+│   ├── technical_doc_generator.py   # Technical Markdown/HTML generators
+│   ├── business_doc_generator.py    # Business doc synthesis (local LLM, single project-level prompt)
+│   ├── utils/                       # Shared utility modules
+│   │   ├── path_utils.py            # Path operations, normalization, pattern matching
+│   │   ├── text_utils.py            # Text processing, escaping, JSON parsing
+│   │   ├── mermaid_generator.py     # Diagram generation (flowcharts, pie charts, etc.)
+│   │   ├── html_renderer.py         # HTML conversion and rendering
+│   │   └── markdown_builder.py      # Fluent Markdown document builder
 │   ├── providers/
 │   │   └── ollama_client.py         # Local client for Ollama (no external deps)
 │   └── analyzers/
@@ -243,7 +249,117 @@ Local LLM calls made: 5
 
 ---
 
-## 🗺️ Business Documentation (What it includes)
+## 🏗️ System Architecture
+
+### Module Dependencies
+
+```
+Main Application (main.py, analyzers, providers, config)
+       │
+       ├─────────────────────────┬─────────────────────
+       │                         │
+       ▼                         ▼
+┌──────────────────┐   ┌──────────────────────┐
+│ BusinessDocGen   │   │ TechnicalDocGen      │
+│ (370 lines)      │   │ (439 lines)          │
+└────┬──┬────┬─────┘   └──┬──┬────┬──┬────────┘
+     │  │    │            │  │    │  │
+     │  │    └────────┬───┘  │    │  │
+     │  └─────────┐   │      │    │  │
+     └────────┐   │   │      │    │  │
+              │   │   │      │    │  │
+              ▼   ▼   ▼      ▼    ▼  ▼
+         ┌───────────────────────────────────┐
+         │    UTILITY LAYER (src/utils/)     │
+         ├───────────────────────────────────┤
+         │ ✓ PathUtils (236 lines)           │
+         │   - Path normalization            │
+         │   - Anchor generation             │
+         │   - Pattern matching (glob/regex) │
+         │                                   │
+         │ ✓ TextUtils (244 lines)           │
+         │   - Text escaping (HTML/Mermaid)  │
+         │   - Lenient JSON parsing          │
+         │   - Whitespace normalization      │
+         │   - Pre-compiled regex patterns   │
+         │                                   │
+         │ ✓ MermaidGenerator (236 lines)    │
+         │   - Flowcharts & pie charts       │
+         │   - Language detection            │
+         │   - Sequence diagrams             │
+         │                                   │
+         │ ✓ HTMLRenderer (185 lines)        │
+         │   - Markdown → HTML conversion    │
+         │   - CSS theming & loading         │
+         │   - Complete document building    │
+         │                                   │
+         │ ✓ MarkdownBuilder (307 lines)     │
+         │   - Fluent Markdown API           │
+         │   - Method chaining for readability│
+         │                                   │
+         │ Total: 1,208 lines of reusable    │
+         │ utilities shared across generators│
+         └───────────────────────────────────┘
+```
+
+### Data Flow
+
+```
+Project Source
+     │
+     ▼
+┌──────────────────────┐
+│ Language Analyzers   │
+│ (Python, JS, Java)   │
+└──────────┬───────────┘
+           │
+           ▼
+       ┌────────┐
+       │ LADOM  │ (Language-Agnostic Document Object Model)
+       │ Schema │
+       └────┬───┘
+            │
+     ┌──────┴──────────────────┐
+     │                         │
+     ▼                         ▼
+┌─────────────────────┐   ┌─────────────────┐
+│ BusinessDocGen      │   │ TechnicalDocGen │
+│ (LLM Synthesis)     │   │ (Jinja2 Template)│
+└────┬────────────┬───┘   └──┬────────┬────┘
+     │            │          │        │
+     ├─ Markdown──┤          ├────┬───┘
+     │            │          │    │
+     ▼            ▼          ▼    ▼
+ business.md  business.html  technical.md  technical.html
+ (uses utilities for all formatting and HTML generation)
+```
+
+### Utility Module Responsibilities
+
+| Module | Purpose | Key Methods |
+|--------|---------|-------------|
+| **PathUtils** | Path operations | `normalize_path()`, `anchor_for_file()`, `short_path()`, `matches_glob_pattern()`, `matches_regex_pattern()` |
+| **TextUtils** | Text processing | `lenient_json_parse()`, `escape_mermaid_label()`, `escape_html()`, `normalize_whitespace()`, `sanitize_filename()` |
+| **MermaidGenerator** | Diagram generation | `language_of_path()`, `project_structure_flowchart()`, `language_pie_chart()`, `top_classes_map()` |
+| **HTMLRenderer** | HTML generation | `markdown_to_html()`, `build_html_document()`, `render_markdown_file_to_html()`, `load_css()` |
+| **MarkdownBuilder** | Document building | `add_heading()`, `add_paragraph()`, `add_code_block()`, `add_table_header()`, `build()` (and 10+ more methods) |
+
+### Generator Architecture
+
+**business_doc_generator.py** (370 lines)
+- Synthesizes LADOM into stakeholder-friendly sections
+- Uses local LLM for business language synthesis
+- Leverages MarkdownBuilder, TextUtils, and MermaidGenerator for output
+- Cleaner, focused code by delegating utilities
+
+**technical_doc_generator.py** (439 lines)
+- Technical Markdown and HTML documentation
+- Jinja2 templating with configurable limits
+- Uses PathUtils for exclusion patterns and path operations
+- Delegates HTML generation to HTMLRenderer
+- Maintains configuration-driven behavior
+
+---
 
 * **Executive Summary** — 2–4 sentence elevator pitch
 * **Audience, Goals, KPIs** — who it’s for and how success is measured
