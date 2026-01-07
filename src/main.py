@@ -25,6 +25,7 @@ from .rate_limiter import RateLimiter
 from .path_validator import PathValidator
 from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
+from .analyzers.ts_analyzer import TypeScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
 from .technical_doc_generator import MarkdownGenerator, HTMLGenerator
 from .ladom_schema import LADOMValidator
@@ -80,7 +81,8 @@ def analyze_file(file_path: str, analyzer, file_type: str):
 def scan_and_analyze(project_path: str, config: ConfigLoader,
                      py_analyzer: PythonAnalyzer,
                      js_analyzer: JavaScriptAnalyzer,
-                     java_analyzer: JavaAnalyzer):
+                     java_analyzer: JavaAnalyzer,
+                     ts_analyzer: TypeScriptAnalyzer):
     exclude_dirs = config.get_exclude_dirs()
     files_to_analyze = []
 
@@ -95,6 +97,8 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
                 files_to_analyze.append((file_path, js_analyzer, "JavaScript"))
             elif file.endswith(".java"):
                 files_to_analyze.append((file_path, java_analyzer, "Java"))
+            elif file.endswith(".ts") or file.endswith(".tsx"):
+                files_to_analyze.append((file_path, ts_analyzer, "TypeScript"))
 
     if not files_to_analyze:
         logger.warning("No supported files found in project")
@@ -197,10 +201,11 @@ def main():
 
     py_analyzer = PythonAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
     js_analyzer = JavaScriptAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
+    ts_analyzer = TypeScriptAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
     java_analyzer = JavaAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
 
     print("\nScanning project:", project_path)
-    aggregated_ladom = scan_and_analyze(project_path, config, py_analyzer, js_analyzer, java_analyzer)
+    aggregated_ladom = scan_and_analyze(project_path, config, py_analyzer, js_analyzer, java_analyzer, ts_analyzer)
     if not aggregated_ladom or not aggregated_ladom.get("files"):
         logger.error("No files were successfully analyzed")
         print("\nError: No supported files found or analysis failed")
