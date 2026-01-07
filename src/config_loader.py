@@ -2,16 +2,101 @@
 
 """
 Configuration loader for the documentation generator.
-Loads settings from config.yaml and environment variables.
+Loads settings from config.yaml and environment variables with validation.
 """
 
 import os
 import yaml
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+CONFIG_SCHEMA = {
+    'exclude_dirs': list,
+    'output': dict,
+    'llm': dict,
+    'cache': dict,
+    'logging': dict,
+    'processing': dict,
+    'security': dict,
+}
+
+OUTPUT_SCHEMA = {
+    'directory': str,
+    'format': str,
+    'include_toc': bool,
+}
+
+LLM_SCHEMA = {
+    'provider': str,
+    'base_url': str,
+    'model': str,
+    'temperature': (int, float),
+    'rate_limit_calls_per_minute': int,
+    'timeout': int,
+    'embedding_model': (str, type(None)),
+}
+
+CACHE_SCHEMA = {
+    'enabled': bool,
+    'file': str,
+}
+
+LOGGING_SCHEMA = {
+    'level': str,
+    'format': str,
+    'file': str,
+}
+
+PROCESSING_SCHEMA = {
+    'parallel': bool,
+    'max_workers': int,
+}
+
+SECURITY_SCHEMA = {
+    'forbidden_paths': list,
+    'validate_paths': bool,
+}
+
+
+class ConfigurationValidationError(Exception):
+    """Raised when configuration validation fails."""
+    pass
+
+
+def _validate_type(value: Any, expected_type: type, field_path: str) -> None:
+    """Validate a configuration value matches expected type."""
+    if expected_type is type(None):
+        # Any value is acceptable
+        return
+
+    if not isinstance(value, expected_type):
+        raise ConfigurationValidationError(
+            f"Configuration field '{field_path}' should be {expected_type.__name__}, got {type(value).__name__}"
+        )
+
+
+def _validate_range(value: int, min_val: int, max_val: Optional[int], field_path: str) -> None:
+    """Validate a configuration value is within expected range."""
+    if value < min_val:
+        raise ConfigurationValidationError(
+            f"Configuration field '{field_path}' must be >= {min_val}, got {value}"
+        )
+    if max_val is not None and value > max_val:
+        raise ConfigurationValidationError(
+            f"Configuration field '{field_path}' must be <= {max_val}, got {value}"
+        )
+
+
+def _validate_choice(value: str, choices: list, field_path: str) -> None:
+    """Validate a configuration value matches one of the allowed choices."""
+    if value not in choices:
+        raise ConfigurationValidationError(
+            f"Configuration field '{field_path}' must be one of {choices}, got '{value}'"
+        )
 
 
 class ConfigLoader:
@@ -67,27 +152,80 @@ class ConfigLoader:
     
     def _load_config(self) -> Dict[str, Any]:
         """
-        Load configuration from file or use defaults.
-        
+        Load configuration from file with validation.
+
         Returns:
-            Configuration dictionary
+            Validated configuration dictionary
         """
         config = self.DEFAULT_CONFIG.copy()
-        
+
         if os.path.exists(self.config_path):
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     user_config = yaml.safe_load(f)
                     if user_config:
+                        self._validate_config(user_config)
                         config = self._merge_configs(config, user_config)
                         logger.info(f"Loaded configuration from {self.config_path}")
-            except Exception as e:
+            except yaml.YAMLError as e:
+                logger.error(f"Invalid YAML syntax in {self.config_path}: {e}")
+                raise ConfigurationValidationError(f"Invalid YAML configuration: {e}") from e
+            except ConfigurationValidationError as e:
+                logger.error(f"Configuration validation failed: {e}")
+                raise
+            except (OSError, IOError) as e:
                 logger.warning(f"Failed to load config from {self.config_path}: {e}")
                 logger.info("Using default configuration")
         else:
             logger.info(f"Config file not found at {self.config_path}, using defaults")
-        
+
         return config
+
+    def _validate_config(self, config: Dict[str, Any]) -> None:
+        """Validate configuration values against schema."""
+        # Validate top-level structure
+        for key in config.keys():
+            if key not in CONFIG_SCHEMA:
+                logger.warning(f"Unknown configuration key: '{key}'")
+
+        # Validate logging settings
+        if 'logging' in config:
+            logging_cfg = config['logging']
+            if 'level' in logging_cfg:
+                _validate_choice(
+                    logging_cfg['level'].upper(),
+                    ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                    'logging.level'
+                )
+            if 'format' in logging_cfg:
+                _validate_type(logging_cfg['format'], str, 'logging.format')
+
+        # Validate LLM settings
+        if 'llm' in config:
+            llm_cfg = config['llm']
+            if 'temperature' in llm_cfg:
+                _validate_range(float(llm_cfg['temperature']), 0.0, 2.0, 'llm.temperature')
+            if 'timeout' in llm_cfg:
+                _validate_range(llm_cfg['timeout'], 10, 600, 'llm.timeout')
+            if 'rate_limit_calls_per_minute' in llm_cfg:
+                _validate_range(llm_cfg['rate_limit_calls_per_minute'], 1, 120, 'llm.rate_limit_calls_per_minute')
+
+        # Validate processing settings
+        if 'processing' in config:
+            proc_cfg = config['processing']
+            if 'max_workers' in proc_cfg:
+                _validate_range(proc_cfg['max_workers'], 1, 32, 'processing.max_workers')
+
+        # Validate cache settings
+        if 'cache' in config:
+            cache_cfg = config['cache']
+            if 'file' in cache_cfg:
+                # Ensure cache file path is valid
+                cache_dir = os.path.dirname(cache_cfg['file']) or '.'
+                if cache_dir and not os.path.isabs(cache_dir):
+                    raise ConfigurationValidationError(
+                        f"Cache file path should be absolute or relative to project root: '{cache_cfg['file']}'"
+                    )
     
     def _merge_configs(self, default: Dict, user: Dict) -> Dict:
         """

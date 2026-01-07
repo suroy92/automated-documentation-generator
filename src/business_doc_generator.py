@@ -16,23 +16,43 @@ No external services; uses the local LLM (providers/ollama_client.py) once.
 from __future__ import annotations
 
 import json
-import re
-from collections import Counter
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from .providers.ollama_client import LLM
-
+from .utils.text_utils import TextUtils
+from .utils.mermaid_generator import MermaidGenerator
+from .utils.markdown_builder import MarkdownBuilder
 
 # ------------------------- LADOM helpers -------------------------
 
-def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, Any]:
-    """Produce a compact view of LADOM for prompting (avoid huge payloads)."""
+
+def _compact_ladom(
+    ladom: Dict[str, Any], limit_files: int | None = 30
+) -> Dict[str, Any]:
+    """
+    Produce a compact view of LADOM for prompting (avoid huge payloads).
+
+    Parameters
+    ----------
+    ladom : dict
+        The full LADOM payload.
+    limit_files : int | None, optional
+        Maximum number of files to keep in the compact view.
+        If ``None`` (the default), returns up to 30 files.
+
+    Returns
+    -------
+    dict
+        A lightweight representation suitable for LLM prompting.
+    """
     out = {
         "project_name": ladom.get("project_name", ""),
         "stats": {"files": 0, "functions": 0, "classes": 0},
         "files": [],
     }
     files = ladom.get("files") or []
+    if limit_files is None:
+        limit_files = 30
     out["stats"]["files"] = len(files)
     fn = 0
     cl = 0
@@ -44,17 +64,21 @@ def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, An
             "classes": [],
         }
         for func in (f.get("functions") or [])[:30]:
-            item["functions"].append({
-                "name": func.get("name", ""),
-                "signature": func.get("signature", ""),
-                "desc": (func.get("description") or "")[:200],
-            })
+            item["functions"].append(
+                {
+                    "name": func.get("name", ""),
+                    "signature": func.get("signature", ""),
+                    "desc": (func.get("description") or "")[:200],
+                }
+            )
         for cls in (f.get("classes") or [])[:20]:
-            item["classes"].append({
-                "name": cls.get("name", ""),
-                "desc": (cls.get("description") or "")[:200],
-                "method_count": len(cls.get("methods") or []),
-            })
+            item["classes"].append(
+                {
+                    "name": cls.get("name", ""),
+                    "desc": (cls.get("description") or "")[:200],
+                    "method_count": len(cls.get("methods") or []),
+                }
+            )
         fn += len(item["functions"])
         cl += len(item["classes"])
         out["files"].append(item)
@@ -65,17 +89,7 @@ def _compact_ladom(ladom: Dict[str, Any], limit_files: int = 30) -> Dict[str, An
 
 def _lenient_json(s: str) -> Dict[str, Any]:
     """Parse JSON; if it fails, extract the first {...} block; else return a skeleton."""
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", s, flags=re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
-    return {
+    default_schema = {
         "executive_summary": "",
         "audience": [],
         "goals": [],
@@ -84,22 +98,42 @@ def _lenient_json(s: str) -> Dict[str, Any]:
         "user_journeys": [],
         "inputs": [],
         "outputs": [],
-        "operations": {"how_to_run": [], "config_keys": [], "logs": [], "troubleshooting": []},
+        "operations": {
+            "how_to_run": [],
+            "config_keys": [],
+            "logs": [],
+            "troubleshooting": [],
+        },
         "security": {"data_flow": "", "pii": "", "storage": "", "llm_usage": ""},
         "risks": [],
         "assumptions": [],
         "glossary": {},
         "roadmap": [],
     }
+    return TextUtils.lenient_json_parse(s, default_schema)
 
 
 # ------------------------- Business sections -------------------------
 
+
 class BusinessDocGenerator:
     """Synthesizes business-friendly documentation and writes Markdown."""
 
-    def __init__(self, llm: LLM) -> None:
+    def __init__(self, llm: LLM, *, max_files: int | None = 30) -> None:
+        """
+        Initialize the generator.
+
+        Parameters
+        ----------
+        llm : Any
+            The language model interface used to generate text.
+        max_files : int | None, optional
+            Maximum number of source files to include when building the compact LADOM view.
+            If ``None``, all files are included.
+            Defaults to 30 if not specified.
+        """
         self.llm = llm
+        self.max_files = max_files
 
     def _prompt(self, compact: Dict[str, Any]) -> str:
         return f"""
@@ -142,14 +176,39 @@ PROJECT STRUCTURE (compact LADOM):
 """.strip()
 
     def synthesize_sections(self, ladom: Dict[str, Any]) -> Dict[str, Any]:
-        compact = _compact_ladom(ladom)
-        raw = self.llm.generate(system="", prompt=self._prompt(compact), temperature=0.2)
+        """
+        Synthesize business-friendly sections from the provided LADOM.
+
+        Parameters
+        ----------
+        ladom : dict
+            The full LADOM payload.
+
+        Returns
+        -------
+        dict
+            A dictionary containing synthesized sections.
+        """
+        compact = _compact_ladom(ladom, limit_files=self.max_files)
+        raw = self.llm.generate(
+            system="", prompt=self._prompt(compact), temperature=0.2
+        )
         data = _lenient_json(raw)
 
         # Normalize shapes
         if not isinstance(data.get("audience"), list):
-            data["audience"] = [str(data.get("audience") or "")] if data.get("audience") else []
-        for k in ("goals", "kpis", "inputs", "outputs", "risks", "assumptions", "roadmap"):
+            data["audience"] = (
+                [str(data.get("audience") or "")] if data.get("audience") else []
+            )
+        for k in (
+            "goals",
+            "kpis",
+            "inputs",
+            "outputs",
+            "risks",
+            "assumptions",
+            "roadmap",
+        ):
             v = data.get(k)
             data[k] = v if isinstance(v, list) else ([str(v)] if v else [])
 
@@ -158,7 +217,8 @@ PROJECT STRUCTURE (compact LADOM):
         else:
             data["capabilities"] = [
                 {"name": str(c.get("name", "")), "desc": str(c.get("desc", ""))}
-                for c in data["capabilities"] if isinstance(c, dict)
+                for c in data["capabilities"]
+                if isinstance(c, dict)
             ]
 
         if not isinstance(data.get("user_journeys"), list):
@@ -193,179 +253,6 @@ PROJECT STRUCTURE (compact LADOM):
 
         return data
 
-    # ------------------------- Diagram helpers -------------------------
-
-    def _language_of_path(self, path: str) -> str:
-        p = (path or "").lower()
-        if p.endswith(".py"):
-            return "Python"
-        if p.endswith(".js") or p.endswith(".mjs") or p.endswith(".cjs") or p.endswith(".ts"):
-            return "JavaScript"
-        if p.endswith(".java"):
-            return "Java"
-        return "Other"
-
-    def _split_segments(self, path: str) -> List[str]:
-        """Normalize to forward slashes and split; drop Windows drive if present."""
-        s = (path or "").replace("\\", "/")
-        segs = [seg for seg in s.split("/") if seg]
-        if segs and segs[0].endswith(":"):  # e.g., 'C:'
-            segs = segs[1:]
-        return segs
-
-    def _common_prefix(self, list_of_seg_lists: List[List[str]]) -> List[str]:
-        if not list_of_seg_lists:
-            return []
-        prefix: List[str] = []
-        for i in range(min(len(s) for s in list_of_seg_lists)):
-            col = {s[i] for s in list_of_seg_lists}
-            if len(col) == 1:
-                prefix.append(next(iter(col)))
-            else:
-                break
-        return prefix
-
-    def _rel_segments(self, path: str, common_prefix: List[str]) -> List[str]:
-        segs = self._split_segments(path)
-        return segs[len(common_prefix):] if len(segs) >= len(common_prefix) else segs
-
-    def _safe_id(self, *parts: str) -> str:
-        raw = "_".join(parts)
-        return re.sub(r"[^a-zA-Z0-9_]", "_", raw)
-
-    def _short_rel_label(self, rel_segs: List[str], keep: int = 3) -> str:
-        if not rel_segs:
-            return "(root)"
-        if len(rel_segs) <= keep:
-            return "/".join(rel_segs)
-        return ".../" + "/".join(rel_segs[-keep:])
-
-    def _esc_label(self, s: str, max_len: int = 80) -> str:
-        """Escape quotes/newlines for Mermaid labels and cap length."""
-        s = (s or "")
-        s = s.replace('"', '\\"')                          # escape double quotes
-        s = re.sub(r"[\r\n\t]+", " ", s)                   # strip newlines/tabs
-        s = re.sub(r"\s{2,}", " ", s).strip()
-        return s[:max_len]
-
-    # ------------------------- Project-centric Mermaid -------------------------
-
-    def _project_structure_mermaid(
-        self, ladom: Dict[str, Any], *, max_dirs: int = 8, max_files_per_dir: int = 10
-    ) -> str:
-        """
-        Build a flowchart with subgraphs per *top-level* directory under the project root,
-        and file nodes within each. Caps dirs/files to keep diagrams readable.
-        """
-        files = ladom.get("files") or []
-        if not files:
-            return "flowchart TD\n  A[No files]"
-
-        # Compute common root prefix across all file paths
-        all_segs = [self._split_segments(f.get("path", "")) for f in files]
-        common_prefix = self._common_prefix(all_segs)
-
-        # Group files by first relative segment (= top-level folder), else "(root)"
-        groups: Dict[str, List[Dict[str, Any]]] = {}
-        for f in files:
-            rel = self._rel_segments(f.get("path", ""), common_prefix)
-            top = rel[0] if len(rel) > 1 else "(root)"
-            groups.setdefault(top, []).append({"rel": rel, "raw": f})
-
-        # Sort groups by size and cap
-        ordered = sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-        if len(ordered) > max_dirs:
-            head = ordered[: max_dirs - 1]
-            tail_count = sum(len(v) for _, v in ordered[max_dirs - 1 :])
-            ordered = head + [("…other", [{"rel": ["(many)"], "raw": {"path": f"... {tail_count} files"}}])]
-
-        lines: List[str] = ["flowchart TD"]
-        proj = ladom.get("project_name") or "Project"
-        root_id = self._safe_id("ROOT", proj)
-        lines.append(f'  {root_id}[{self._esc_label(proj)}]')
-
-        for top, entries in ordered:
-            sg_id = self._safe_id("SG", top)
-            lines.append(f"  subgraph {sg_id}[{self._esc_label(top)}]")
-            # list up to max_files_per_dir
-            for i, e in enumerate(entries[:max_files_per_dir], 1):
-                rel_label = self._short_rel_label(e["rel"], keep=3)
-                rel_label = self._esc_label(rel_label)
-                nid = self._safe_id("F", top, str(i))
-                lines.append(f'    {nid}["{rel_label}"]')
-                lines.append(f"    {root_id} --> {nid}")
-            if len(entries) > max_files_per_dir:
-                more = len(entries) - max_files_per_dir
-                mid = self._safe_id("MORE", top)
-                lines.append(f'    {mid}["{self._esc_label("… +" + str(more) + " more")}"]')
-                lines.append(f"    {root_id} --> {mid}")
-            lines.append("  end")
-        return "\n".join(lines)
-
-    def _language_pie_mermaid(self, ladom: Dict[str, Any]) -> str:
-        files = ladom.get("files") or []
-        c = Counter(self._language_of_path(f.get("path", "")) for f in files)
-        if not c:
-            return "pie title Language Mix\n  \"Unknown\" : 1"
-        lines = ["pie title Language Mix"]
-        for lang, count in c.items():
-            lines.append(f'  "{self._esc_label(lang)}" : {int(count)}')
-        return "\n".join(lines)
-
-    def _top_classes_mermaid(self, ladom: Dict[str, Any], *, limit: int = 12) -> str | None:
-        """Optional class map: top classes by method count; connects class nodes to their file."""
-        files = ladom.get("files") or []
-        classes: List[Tuple[str, int, str]] = []  # (name, method_count, rel_label)
-
-        all_segs = [self._split_segments(f.get("path", "")) for f in files]
-        common_prefix = self._common_prefix(all_segs)
-
-        for f in files:
-            rel = self._rel_segments(f.get("path", ""), common_prefix)
-            rel_label = self._short_rel_label(rel, keep=3)
-            for cls in (f.get("classes") or []):
-                name = cls.get("name") or ""
-                mcount = len(cls.get("methods") or [])
-                if name:
-                    classes.append((f"{name}", mcount, rel_label))
-
-        if not classes:
-            return None
-
-        classes.sort(key=lambda t: (-t[1], t[0]))
-        classes = classes[:limit]
-
-        lines = ["flowchart LR", "  subgraph Classes (top)"]
-        for i, (name, mcount, rel_label) in enumerate(classes, 1):
-            cid = self._safe_id("C", name, str(i))
-            fid = self._safe_id("CF", rel_label, str(i))
-            nm = self._esc_label(name)
-            rl = self._esc_label(rel_label)
-            lines.append(f'    {cid}["{nm} ({mcount})"]')
-            lines.append(f'    {fid}["{rl}"]')
-            lines.append(f"    {cid} --> {fid}")
-        lines.append("  end")
-        return "\n".join(lines)
-
-    def _docgen_flow_mermaid(self) -> str:
-        """Appendix: how this documentation tool works (kept concise)."""
-        return """sequenceDiagram
-  autonumber
-  participant User
-  participant CLI as DocGen CLI
-  participant Scan as Scanner
-  participant AZ as Analyzers
-  participant LLM as Local LLM (Ollama)
-  participant Out as Renderers
-
-  User->>CLI: Choose project path & doc type
-  CLI->>Scan: Walk files (apply excludes)
-  Scan->>AZ: Symbols per file -> LADOM
-  AZ->>LLM: Summaries/normalization (local)
-  LLM-->>AZ: JSON hints (no external calls)
-  AZ->>Out: Technical.md/html & Business.md/html
-"""
-
     # ------------------------- Markdown rendering -------------------------
 
     def generate_markdown(
@@ -375,143 +262,157 @@ PROJECT STRUCTURE (compact LADOM):
         output_md_path: str,
         ladom: Dict[str, Any],
     ) -> None:
-        lines: List[str] = []
-        lines.append(f"# {project_name} — Business Overview\n")
+        builder = MarkdownBuilder()
+        
+        builder.add_heading(f"{project_name} — Business Overview", level=1)
+        builder.add_blank_line()
+        
         if sections.get("executive_summary"):
-            lines.append(sections["executive_summary"].strip() + "\n")
+            builder.add_paragraph(sections["executive_summary"].strip())
 
         if sections.get("audience"):
-            lines.append("## Audience\n")
+            builder.add_heading("Audience", level=2)
+            builder.add_blank_line()
             for a in sections["audience"]:
-                lines.append(f"- {a}")
-            lines.append("")
+                builder.add_list_item(a)
+            builder.add_blank_line()
 
         for title in ("Goals", "KPIs"):
             items = sections.get(title.lower(), [])
             if items:
-                lines.append(f"## {title}\n")
+                builder.add_heading(title, level=2)
+                builder.add_blank_line()
                 for i in items:
-                    lines.append(f"- {i}")
-                lines.append("")
+                    builder.add_list_item(i)
+                builder.add_blank_line()
 
         if sections.get("capabilities"):
-            lines.append("## Capabilities\n")
+            builder.add_heading("Capabilities", level=2)
+            builder.add_blank_line()
             for c in sections["capabilities"]:
                 if c.get("name") or c.get("desc"):
-                    lines.append(f"- **{c.get('name','')}** — {c.get('desc','')}")
-            lines.append("")
+                    builder.add_list_item(f"**{c.get('name', '')}** — {c.get('desc', '')}")
+            builder.add_blank_line()
 
         if sections.get("user_journeys"):
-            lines.append("## User Journeys\n")
+            builder.add_heading("User Journeys", level=2)
+            builder.add_blank_line()
             for j in sections["user_journeys"]:
-                lines.append(f"**{j.get('actor','User')}**")
+                builder.add_line(f"**{j.get('actor', 'User')}**")
                 for idx, s in enumerate(j.get("steps") or [], 1):
-                    lines.append(f"  {idx}. {s}")
-                lines.append("")
-            lines.append("")
+                    builder.add_line(f"  {idx}. {s}")
+                builder.add_blank_line()
+            builder.add_blank_line()
 
         # ----- Project-centric diagrams -----
-        lines.append("## Diagrams\n")
+        builder.add_heading("Diagrams", level=2)
+        builder.add_blank_line()
 
-        lines.append("**Project Structure**")
-        lines.append("```mermaid")
-        lines.append(self._project_structure_mermaid(ladom))
-        lines.append("```")
-        lines.append("")
+        builder.add_line("**Project Structure**")
+        builder.add_code_block(MermaidGenerator.project_structure_flowchart(ladom), "mermaid")
+        builder.add_blank_line()
 
-        lines.append("**Language Mix**")
-        lines.append("```mermaid")
-        lines.append(self._language_pie_mermaid(ladom))
-        lines.append("```")
-        lines.append("")
+        builder.add_line("**Language Mix**")
+        builder.add_code_block(MermaidGenerator.language_pie_chart(ladom), "mermaid")
+        builder.add_blank_line()
 
-        cls_map = self._top_classes_mermaid(ladom)
+        cls_map = MermaidGenerator.top_classes_map(ladom)
         if cls_map:
-            lines.append("**Top Classes (by methods)**")
-            lines.append("```mermaid")
-            lines.append(cls_map)
-            lines.append("```")
-            lines.append("")
+            builder.add_line("**Top Classes (by methods)**")
+            builder.add_code_block(cls_map, "mermaid")
+            builder.add_blank_line()
 
         if sections.get("inputs") or sections.get("outputs"):
-            lines.append("## Inputs & Outputs\n")
+            builder.add_heading("Inputs & Outputs", level=2)
+            builder.add_blank_line()
             if sections.get("inputs"):
-                lines.append("**Inputs**")
+                builder.add_line("**Inputs**")
                 for i in sections["inputs"]:
-                    lines.append(f"- {i}")
+                    builder.add_list_item(i)
             if sections.get("outputs"):
-                lines.append("\n**Outputs**")
+                builder.add_line("")
+                builder.add_line("**Outputs**")
                 for o in sections["outputs"]:
-                    lines.append(f"- {o}")
-            lines.append("")
+                    builder.add_list_item(o)
+            builder.add_blank_line()
 
         ops = sections.get("operations") or {}
-        if any(ops.get(k) for k in ("how_to_run", "config_keys", "logs", "troubleshooting")):
-            lines.append("## Operations\n")
+        if any(
+            ops.get(k) for k in ("how_to_run", "config_keys", "logs", "troubleshooting")
+        ):
+            builder.add_heading("Operations", level=2)
+            builder.add_blank_line()
             if ops.get("how_to_run"):
-                lines.append("**How to Run**")
+                builder.add_line("**How to Run**")
                 for i in ops["how_to_run"]:
-                    lines.append(f"- {i}")
+                    builder.add_list_item(i)
             if ops.get("config_keys"):
-                lines.append("\n**Config Keys**")
+                builder.add_line("")
+                builder.add_line("**Config Keys**")
                 for i in ops["config_keys"]:
-                    lines.append(f"- {i}")
+                    builder.add_list_item(i)
             if ops.get("logs"):
-                lines.append("\n**Logs to Watch**")
+                builder.add_line("")
+                builder.add_line("**Logs to Watch**")
                 for i in ops["logs"]:
-                    lines.append(f"- {i}")
+                    builder.add_list_item(i)
             if ops.get("troubleshooting"):
-                lines.append("\n**Troubleshooting**")
+                builder.add_line("")
+                builder.add_line("**Troubleshooting**")
                 for i in ops["troubleshooting"]:
-                    lines.append(f"- {i}")
-            lines.append("")
+                    builder.add_list_item(i)
+            builder.add_blank_line()
 
         sec = sections.get("security") or {}
         if any(sec.get(k) for k in ("data_flow", "pii", "storage", "llm_usage")):
-            lines.append("## Security & Privacy\n")
+            builder.add_heading("Security & Privacy", level=2)
+            builder.add_blank_line()
             if sec.get("data_flow"):
-                lines.append(f"- **Data Flow:** {sec['data_flow']}")
+                builder.add_list_item(f"**Data Flow:** {sec['data_flow']}")
             if sec.get("pii"):
-                lines.append(f"- **PII:** {sec['pii']}")
+                builder.add_list_item(f"**PII:** {sec['pii']}")
             if sec.get("storage"):
-                lines.append(f"- **Storage:** {sec['storage']}")
+                builder.add_list_item(f"**Storage:** {sec['storage']}")
             if sec.get("llm_usage"):
-                lines.append(f"- **LLM Usage:** {sec['llm_usage']}")
-            lines.append("")
+                builder.add_list_item(f"**LLM Usage:** {sec['llm_usage']}")
+            builder.add_blank_line()
 
         if sections.get("risks"):
-            lines.append("## Risks\n")
+            builder.add_heading("Risks", level=2)
+            builder.add_blank_line()
             for r in sections["risks"]:
-                lines.append(f"- {r}")
-            lines.append("")
+                builder.add_list_item(r)
+            builder.add_blank_line()
 
         if sections.get("assumptions"):
-            lines.append("## Assumptions\n")
+            builder.add_heading("Assumptions", level=2)
+            builder.add_blank_line()
             for a in sections["assumptions"]:
-                lines.append(f"- {a}")
-            lines.append("")
+                builder.add_list_item(a)
+            builder.add_blank_line()
 
         if sections.get("glossary"):
-            lines.append("## Glossary\n")
+            builder.add_heading("Glossary", level=2)
+            builder.add_blank_line()
             for k, v in sections["glossary"].items():
-                lines.append(f"- **{k}:** {v}")
-            lines.append("")
+                builder.add_list_item(f"**{k}:** {v}")
+            builder.add_blank_line()
 
         if sections.get("roadmap"):
-            lines.append("## Roadmap\n")
+            builder.add_heading("Roadmap", level=2)
+            builder.add_blank_line()
             for r in sections["roadmap"]:
-                lines.append(f"- {r}")
-            lines.append("")
+                builder.add_list_item(r)
+            builder.add_blank_line()
 
         # Appendix: how this doc tool works (kept brief)
-        lines.append("## Appendix — How this documentation was generated\n")
-        lines.append("```mermaid")
-        lines.append(self._docgen_flow_mermaid())
-        lines.append("```")
-        lines.append("")
+        builder.add_heading("Appendix — How this documentation was generated", level=2)
+        builder.add_blank_line()
+        builder.add_code_block(MermaidGenerator.docgen_sequence_diagram(), "mermaid")
+        builder.add_blank_line()
 
         with open(output_md_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines).strip() + "\n")
+            f.write(builder.build())
 
     # Public API: one-shot convenience
     def generate(self, ladom: Dict[str, Any], output_md_path: str) -> None:
