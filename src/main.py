@@ -27,7 +27,7 @@ from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
 from .analyzers.ts_analyzer import TypeScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
-from .technical_doc_generator import MarkdownGenerator, HTMLGenerator
+from .technical_doc_generator import MarkdownGenerator, HTMLGenerator, GeneratorConfig
 from .ladom_schema import LADOMValidator
 from .providers.ollama_client import LLM, LLMConfig
 from .business_doc_generator import BusinessDocGenerator
@@ -149,9 +149,10 @@ def _menu_choice() -> str:
 def _generate_technical_docs(aggregated_ladom, output_dir: str) -> Tuple[str, str]:
     md_path = os.path.join(output_dir, "documentation.technical.md")
     html_path = os.path.join(output_dir, "documentation.technical.html")
-    md = MarkdownGenerator()
+    gen_config = GeneratorConfig()
+    md = MarkdownGenerator(gen_config)
     md.generate(aggregated_ladom, md_path)
-    HTMLGenerator().generate(aggregated_ladom, html_path)
+    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
     logger.info(f"✓ Technical Markdown: {md_path}")
     logger.info(f"✓ Technical HTML:     {html_path}")
     return md_path, html_path
@@ -160,9 +161,10 @@ def _generate_technical_docs(aggregated_ladom, output_dir: str) -> Tuple[str, st
 def _generate_business_docs(aggregated_ladom, output_dir: str, llm_client: LLM) -> Tuple[str, str]:
     md_path = os.path.join(output_dir, "documentation.business.md")
     html_path = os.path.join(output_dir, "documentation.business.html")
+    gen_config = GeneratorConfig()
     biz = BusinessDocGenerator(llm_client)
     biz.generate(aggregated_ladom, md_path)
-    HTMLGenerator().generate(aggregated_ladom, html_path)
+    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
     logger.info(f"✓ Business Markdown:  {md_path}")
     logger.info(f"✓ Business HTML:      {html_path}")
     return md_path, html_path

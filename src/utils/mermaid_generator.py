@@ -76,7 +76,7 @@ class MermaidGenerator:
         """
         files = ladom.get("files") or []
         if not files:
-            return "flowchart TD\\n  A[No files]"
+            return "flowchart TD\n  A[No files]"
 
         # Compute common root prefix
         all_segs = [PathUtils.split_segments(f.get("path", "")) for f in files]
@@ -129,7 +129,7 @@ class MermaidGenerator:
             
             lines.append("  end")
         
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     @staticmethod
     def language_pie_chart(ladom: Dict[str, Any]) -> str:
@@ -152,13 +152,13 @@ class MermaidGenerator:
         )
         
         if not counter:
-            return 'pie title Language Mix\\n  "Unknown" : 1'
+            return 'pie title Language Mix\n  "Unknown" : 1'
         
         lines = ["pie title Language Mix"]
         for lang, count in counter.items():
             lines.append(f'  "{TextUtils.escape_mermaid_label(lang)}" : {int(count)}')
         
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     @staticmethod
     def top_classes_map(
@@ -200,7 +200,7 @@ class MermaidGenerator:
         classes.sort(key=lambda t: (-t[1], t[0]))
         classes = classes[:limit]
 
-        lines = ["flowchart LR", "  subgraph Classes (top)"]
+        lines = ["flowchart LR", "  subgraph TopClasses[Top Classes by Methods]"]
         for i, (name, mcount, rel_label) in enumerate(classes, 1):
             cid = PathUtils.safe_id("C", name, str(i))
             fid = PathUtils.safe_id("CF", rel_label, str(i))
@@ -211,7 +211,7 @@ class MermaidGenerator:
             lines.append(f"    {cid} --> {fid}")
         lines.append("  end")
         
-        return "\\n".join(lines)
+        return "\n".join(lines)
 
     @staticmethod
     def docgen_sequence_diagram() -> str:
@@ -255,4 +255,4 @@ class MermaidGenerator:
         str
             Wrapped code block.
         """
-        return f"```mermaid\\n{mermaid_code}\\n```"
+        return f"```mermaid\n{mermaid_code}\n```"

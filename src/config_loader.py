@@ -220,11 +220,12 @@ class ConfigLoader:
         if 'cache' in config:
             cache_cfg = config['cache']
             if 'file' in cache_cfg:
-                # Ensure cache file path is valid
-                cache_dir = os.path.dirname(cache_cfg['file']) or '.'
-                if cache_dir and not os.path.isabs(cache_dir):
+                # Ensure cache file path is valid (allow both absolute and relative paths)
+                cache_file = cache_cfg['file']
+                # Just validate it's a non-empty string, paths are resolved later
+                if not cache_file or not isinstance(cache_file, str):
                     raise ConfigurationValidationError(
-                        f"Cache file path should be absolute or relative to project root: '{cache_cfg['file']}'"
+                        f"Cache file path must be a non-empty string: '{cache_file}'"
                     )
     
     def _merge_configs(self, default: Dict, user: Dict) -> Dict:

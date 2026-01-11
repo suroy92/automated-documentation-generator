@@ -181,9 +181,14 @@ class PathUtils:
         str
             Anchor ID suitable for HTML/Markdown links.
         """
-        raw = PathUtils.strip_drive_letter(path).lower()
-        slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
-        return f"file-{slug or 'unknown'}"
+        # Get just the filename without extension for cleaner anchors
+        normalized = PathUtils.normalize_path(path)
+        parts = normalized.split("/")
+        filename = parts[-1] if parts else "unknown"
+        # Remove extension and create clean slug
+        name_without_ext = filename.rsplit(".", 1)[0] if "." in filename else filename
+        slug = re.sub(r"[^a-z0-9]+", "-", name_without_ext.lower()).strip("-")
+        return f"{slug}"
 
     @staticmethod
     def safe_id(*parts: str) -> str:

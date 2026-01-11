@@ -11,6 +11,7 @@ from unittest.mock import Mock, MagicMock
 from src.analyzers.py_analyzer import PythonAnalyzer
 from src.analyzers.js_analyzer import JavaScriptAnalyzer
 from src.analyzers.java_analyzer import JavaAnalyzer
+from src.analyzers.ts_analyzer import TypeScriptAnalyzer
 
 
 class TestPythonAnalyzer:
@@ -397,3 +398,79 @@ class TestAnalyzerConsistency:
         # Both should return the same language property structure
         assert py_analyzer._get_language_name() == 'python'
         assert js_analyzer._get_language_name() == 'javascript'
+
+
+class TestTypeScriptAnalyzer:
+    """Test cases for TypeScript analyzer."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mock LLM client consistent with BaseAnalyzer contract."""
+        client = Mock()
+        # BaseAnalyzer expects a client with .generate(system=, prompt=, temperature=)
+        def _fake_generate(**kwargs):
+            # Return minimal JSON-like string; BaseAnalyzer will normalize
+            return '{"summary":"Auto-generated doc","params":[],"returns":{"type":"","desc":""},"throws":[],"examples":[],"notes":[]}'
+        client.generate = MagicMock(side_effect=_fake_generate)
+        return client
+
+    @pytest.fixture
+    def temp_ts_file(self):
+        """Create a temporary TypeScript file."""
+        content = '''
+function add(a: number, b: number): number {
+    return a + b;
+}
+
+const subtract = (a: number, b: number): number => {
+    return a - b;
+}
+
+class Calculator {
+    constructor(initialValue: number) {
+        // ctor
+    }
+
+    multiply(x: number, y: number): number {
+        return x * y;
+    }
+}
+
+interface ICalc {
+    divide(x: number, y: number): number;
+}
+'''
+        fd, path = tempfile.mkstemp(suffix='.ts')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+        yield path
+        os.remove(path)
+
+    def test_analyze_typescript_file(self, mock_client, temp_ts_file):
+        """Test analyzing a TypeScript file."""
+        analyzer = TypeScriptAnalyzer(client=mock_client)
+        result = analyzer.analyze(temp_ts_file)
+
+        assert result is not None
+        assert 'files' in result
+        assert len(result['files']) == 1
+
+        file_data = result['files'][0]
+        assert 'functions' in file_data
+        assert 'classes' in file_data
+
+        # Functions should include add and subtract
+        funcs = file_data['functions']
+        names = {f['name'] for f in funcs}
+        assert 'add' in names
+        assert 'subtract' in names
+
+        # Classes should include Calculator (with ctor + multiply) and ICalc (interface)
+        classes = file_data['classes']
+        cnames = {c['name'] for c in classes}
+        assert 'Calculator' in cnames
+        assert 'ICalc' in cnames
+        calc = next(c for c in classes if c['name'] == 'Calculator')
+        mnames = {m['name'] for m in calc['methods']}
+        assert 'constructor' in mnames
+        assert 'multiply' in mnames

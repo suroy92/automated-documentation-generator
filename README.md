@@ -7,7 +7,7 @@ A robust, language-agnostic CLI that scans a project and generates documentation
 
 ## ✨ Features
 
-- 🔍 **Multi-language support**: Python & JavaScript (extensible analyzers)
+- 🔍 **Multi-language support**: Python, JavaScript & TypeScript (extensible analyzers)
 - 🧠 **Local LLM**: Uses an Ollama model (default: `qwen2.5-coder:7b`)
 - 🧱 **LADOM**: A consistent, language-agnostic schema for docs
 - ⚡ **Parallel processing**: Multi-threaded scanning
@@ -171,6 +171,7 @@ automated-doc-generator/
 │       ├── base_analyzer.py         # LLM prompt + normalization; caching
 │       ├── py_analyzer.py           # Python analyzer (AST + LLM synthesis)
 │       ├── js_analyzer.py           # JavaScript analyzer (covers constructor/field/prototype patterns)
+│       ├── ts_analyzer.py           # TypeScript analyzer (regex-based; functions/classes/interfaces)
 │       └── java_analyzer.py         # Java analyzer (optional; uses javalang if installed)
 ├── tests/
 │   ├── test_ladom_schema.py
@@ -310,7 +311,7 @@ Project Source
      ▼
 ┌──────────────────────┐
 │ Language Analyzers   │
-│ (Python, JS, Java)   │
+│ (Python, JS, TS, Java) │
 └──────────┬───────────┘
            │
            ▼

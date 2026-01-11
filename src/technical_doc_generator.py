@@ -65,133 +65,174 @@ class GeneratorConfig:
 # Default Jinja2 template – users can override via config
 # NOTE: The template uses ~~~ fenced blocks (not ```), which are supported by Python-Markdown's fenced_code extension.
 DEFAULT_TEMPLATE = r"""
-# {{ project }} — Documentation
-> Generated locally via {{ generator }}
+# {{ project }}
+
+**Technical API Reference**
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Project Structure](#project-structure)
+- [Modules](#modules)
+{% for file in files -%}
+  - [{{ file.display_path }}](#{{ file.anchor }})
+{% endfor %}
+
+---
 
 ## Overview
-- **Files:** {{ counts.files }}
-- **Functions:** {{ counts.functions }}
-- **Classes:** {{ counts.classes }}
+
+This codebase contains **{{ counts.files }}** modules with **{{ counts.functions }}** functions and **{{ counts.classes }}** classes.
 
 {{ metadata_overview }}
 
-## Table of Contents
-{% for file in files %}
-- [{{ file.short_path }}](#{{ file.anchor }})
-{% endfor %}
+## Project Structure
 
-## File Summaries
-| File | Functions | Classes |
-|---|---:|---:|
-{% for file in files %}
-| {{ file.short_path }} | {{ file.func_count }} | {{ file.class_count }} |
-{% endfor %}
+```
+{{ project_tree }}
+```
 
-{% for file in files %}
 ---
-### {{ file.short_path }}
-<a id="{{ file.anchor }}"></a>
-{% if file.summary %}
-{{ file.summary }}
-{% endif %}
 
-{% if file.functions %}
+## Modules
+
+{% for file in files %}
+### {{ file.display_path }}
+{%- if file.summary %}
+
+{{ file.summary }}
+{%- endif %}
+
+<details id="{{ file.anchor }}">
+<summary><b>Module API</b> ({{ file.func_count }} function{% if file.func_count != 1 %}s{% endif %}{% if file.classes %}, {{ file.class_count }} class{% if file.class_count != 1 %}es{% endif %}{% endif %})</summary>
+
+{% if file.functions -%}
 #### Functions
 {% for fn in file.functions %}
-**{{ fn.name }}** {{ fn.signature or "" }}
-{% if fn.description %}
+---
+
+##### {{ fn.name }}
+
+```python
+{{ fn.name }}{{ fn.signature or "()" }}
+```
+{%- if fn.description %}
+
 {{ fn.description }}
-{% endif %}
+{%- endif %}
+{%- if fn.parameters %}
 
-{% if fn.parameters %}
-**Parameters**
-| Name | Type | Default | Description |
-|---|---|---|---|
-{% for p in fn.parameters %}
-| {{ p.name }} | {{ p.type }} | {{ p.default }} | {{ p.description }} |
-{% endfor %}
-{% endif %}
+**Arguments:**
 
-{% if fn.returns %}
-**Returns**
-- `{{ fn.returns.type }}` — {{ fn.returns.description }}
-{% endif %}
+{% for p in fn.parameters -%}
+- `{{ p.name }}`{% if p.type %} ({{ p.type }}){% endif %}{% if p.default and p.default != "None" %} = `{{ p.default }}`{% endif %}{% if p.description %} – {{ p.description }}{% endif %}
+{% endfor -%}
+{%- endif %}
+{%- if fn.returns and (fn.returns.type or fn.returns.description) %}
 
-{% if fn.throws %}
-**Throws**
-{% for t in fn.throws %}
+**Returns:** {% if fn.returns.type %}`{{ fn.returns.type }}`{% endif %}{% if fn.returns.description %} – {{ fn.returns.description }}{% endif %}
+{%- endif %}
+{%- if fn.throws %}
+
+**Raises:**
+
+{% for t in fn.throws -%}
 - {{ t }}
-{% endfor %}
-{% endif %}
+{% endfor -%}
+{%- endif %}
+{%- if fn.examples %}
 
-{% if fn.examples %}
-**Examples**
-{% for e in fn.examples[:2] %}
-~~~{{ e.language_hint or "" }}
+**Example:**
+
+{% for e in fn.examples[:2] -%}
+```{{ e.language_hint or "" }}
 {{ e.code.strip() }}
-~~~
-{% endfor %}
-{% endif %}
+```
+{% endfor -%}
+{%- endif %}
+{%- if fn.source %}
 
-{% if fn.source %}
-*Source:* `{{ fn.source }}`
-{% endif %}
-{% endfor %}
-{% endif %}
+<sub>Source: `{{ fn.source }}`</sub>
+{%- endif %}
 
-{% if file.classes %}
+{% endfor -%}
+{%- endif %}
+{%- if file.classes %}
+
 #### Classes
 {% for cl in file.classes %}
-**class {{ cl.name }}**
-{% if cl.description %}
+---
+
+##### {{ cl.name }}
+
+```python
+class {{ cl.name }}
+```
+{%- if cl.description %}
+
 {{ cl.description }}
-{% endif %}
+{%- endif %}
+{%- if cl.methods %}
 
-{% if cl.methods %}
+**Methods:**
+
 {% for m in cl.methods %}
-**{{ m.name }}** {{ m.signature or "" }}
-{% if m.description %}
+###### {{ m.name }}
+
+```python
+{{ m.name }}{{ m.signature or "()" }}
+```
+{%- if m.description %}
+
 {{ m.description }}
-{% endif %}
+{%- endif %}
+{%- if m.parameters %}
 
-{% if m.parameters %}
-**Parameters**
-| Name | Type | Default | Description |
-|---|---|---|---|
-{% for p in m.parameters %}
-| {{ p.name }} | {{ p.type }} | {{ p.default }} | {{ p.description }} |
-{% endfor %}
-{% endif %}
+**Arguments:**
 
-{% if m.returns %}
-**Returns**
-- `{{ m.returns.type }}` — {{ m.returns.description }}
-{% endif %}
+{% for p in m.parameters -%}
+- `{{ p.name }}`{% if p.type %} ({{ p.type }}){% endif %}{% if p.default and p.default != "None" %} = `{{ p.default }}`{% endif %}{% if p.description %} – {{ p.description }}{% endif %}
+{% endfor -%}
+{%- endif %}
+{%- if m.returns and (m.returns.type or m.returns.description) %}
 
-{% if m.throws %}
-**Throws**
-{% for t in m.throws %}
+**Returns:** {% if m.returns.type %}`{{ m.returns.type }}`{% endif %}{% if m.returns.description %} – {{ m.returns.description }}{% endif %}
+{%- endif %}
+{%- if m.throws %}
+
+**Raises:**
+
+{% for t in m.throws -%}
 - {{ t }}
-{% endfor %}
-{% endif %}
+{% endfor -%}
+{%- endif %}
+{%- if m.examples %}
 
-{% if m.examples %}
-**Examples**
-{% for e in m.examples[:2] %}
-~~~{{ e.language_hint or "" }}
+**Example:**
+
+{% for e in m.examples[:2] -%}
+```{{ e.language_hint or "" }}
 {{ e.code.strip() }}
-~~~
-{% endfor %}
-{% endif %}
+```
+{% endfor -%}
+{%- endif %}
+{%- if m.source %}
 
-{% if m.source %}
-*Source:* `{{ m.source }}`
-{% endif %}
-{% endfor %}
-{% endif %}
-{% endfor %}
-{% endif %}
-{% endfor %}
+<sub>Source: `{{ m.source }}`</sub>
+{%- endif %}
+
+{% endfor -%}
+{%- endif %}
+{% endfor -%}
+{%- endif %}
+
+</details>
+
+{% endfor -%}
+
+---
+
+*Documentation generated by {{ generator }}*
 """
 
 
@@ -365,6 +406,57 @@ class MarkdownGenerator:
 
         return out
 
+    def _generate_project_tree(self, files: List[Dict[str, Any]], project_name: str) -> str:
+        """Generate ASCII tree representation of project structure."""
+        # Build directory tree
+        tree: Dict[str, Any] = {"files": [], "dirs": {}}
+        
+        for f in files:
+            display_path = f.get("display_path", "")
+            if not display_path:
+                continue
+            
+            parts = display_path.split("/")
+            if len(parts) == 1:
+                # Root level file
+                tree["files"].append(parts[0])
+            else:
+                # File in subdirectory - navigate through dirs
+                current = tree["dirs"]
+                for i, part in enumerate(parts[:-1]):
+                    if part not in current:
+                        current[part] = {"files": [], "dirs": {}}
+                    if i < len(parts) - 2:
+                        current = current[part]["dirs"]
+                # Add file to the last directory
+                current[parts[-2]]["files"].append(parts[-1])
+        
+        # Generate ASCII tree
+        lines = [project_name + "/"]
+        
+        def add_tree_lines(dirs: Dict, files: List[str], prefix: str = ""):
+            all_dirs = sorted(dirs.keys())
+            all_files = sorted(files)
+            
+            # Add directories first
+            for i, dir_name in enumerate(all_dirs):
+                is_last = (i == len(all_dirs) - 1) and not all_files
+                connector = "└── " if is_last else "├── "
+                lines.append(f"{prefix}{connector}{dir_name}/")
+                
+                extension = "    " if is_last else "│   "
+                dir_node = dirs[dir_name]
+                add_tree_lines(dir_node.get("dirs", {}), dir_node.get("files", []), prefix + extension)
+            
+            # Add files
+            for i, fname in enumerate(all_files):
+                is_last = i == len(all_files) - 1
+                connector = "└── " if is_last else "├── "
+                lines.append(f"{prefix}{connector}{fname}")
+        
+        add_tree_lines(tree.get("dirs", {}), tree.get("files", []))
+        return "\n".join(lines)
+
     def _build_context(self, ladom: Dict[str, Any]) -> Dict[str, Any]:
         project = ladom.get("project_name") or "Project"
         files = ladom.get("files") or []
@@ -377,13 +469,20 @@ class MarkdownGenerator:
             counts.functions += len(f.get("functions", []) or [])
             counts.classes += len(f.get("classes", []) or [])
 
+        # Calculate common prefix for display paths
+        all_segs = [PathUtils.split_segments(f.get("path", "")) for f in files]
+        common_prefix = PathUtils.common_prefix(all_segs)
+
         enriched_files: List[Dict[str, Any]] = []
         for f in files:
             fpath = str(f.get("path", ""))
+            rel_segs = PathUtils.relative_segments(fpath, common_prefix)
+            display = "/".join(rel_segs) if rel_segs else PathUtils.short_path(fpath)
             file_obj = {
                 "path": fpath,
                 "anchor": PathUtils.anchor_for_file(fpath),
                 "short_path": PathUtils.short_path(fpath),
+                "display_path": display,
                 "summary": f.get("summary", "") or "",
                 "func_count": len(f.get("functions", []) or []),
                 "class_count": len(f.get("classes", []) or []),
@@ -398,6 +497,9 @@ class MarkdownGenerator:
             }
             enriched_files.append(file_obj)
 
+        # Generate project tree
+        project_tree = self._generate_project_tree(enriched_files, project)
+
         metadata_overview = (self.config.metadata or {}).get("overview", "")
 
         return {
@@ -405,6 +507,7 @@ class MarkdownGenerator:
             "generator": "technical_doc_generator",
             "counts": counts,
             "files": enriched_files,
+            "project_tree": project_tree,
             "metadata_overview": metadata_overview,
             **(self.config.metadata or {}),
         }
@@ -437,10 +540,18 @@ class MarkdownGenerator:
         ret.setdefault("description", "")
 
         examples = list(sym.get("examples", []) or [])
+        normalized_examples = []
         for e in examples:
             if isinstance(e, dict):
                 e.setdefault("code", "")
                 e.setdefault("language_hint", "")
+                normalized_examples.append(e)
+            elif isinstance(e, str):
+                # Convert string examples to dict format
+                normalized_examples.append({"code": e, "language_hint": ""})
+            else:
+                # Skip invalid example types
+                continue
 
         return {
             "name": sym.get("name", "") or "",
@@ -449,7 +560,7 @@ class MarkdownGenerator:
             "parameters": params,
             "returns": ret,
             "throws": list(sym.get("throws", []) or []),
-            "examples": examples,
+            "examples": normalized_examples,
             "source": src,
         }
 
