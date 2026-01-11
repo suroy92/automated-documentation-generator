@@ -107,12 +107,12 @@ output:
 
 # Local LLM configuration
 llm:
+  provider: ollama
   model: qwen2.5-coder:7b        # pull via: ollama pull qwen2.5-coder:7b
   base_url: http://localhost:11434
   temperature: 0.2
   rate_limit_calls_per_minute: 20
-  embedding_model: all-minilm:l6-v2   # optional, for future embeddings use
-  timeout_seconds: 120
+  # embedding_model: all-minilm:l6-v2   # optional (defaults to all-minilm:l6-v2)
 
 # Caching
 cache:
@@ -122,18 +122,16 @@ cache:
 # Processing options
 processing:
   parallel: true
-  max_workers: 4
+  max_workers: 6
 
-# Security hardening — keep secrets out of prompts (even locally)
+# Security configuration
 security:
   forbidden_paths:
-    - "**/.env"
-    - "**/secrets/**"
-    - "**/*.pem"
-    - "**/*.key"
-    - "**/.git/**"
-    - "**/__pycache__/**"
-    - "**/node_modules/**"
+    - /etc
+    - /sys
+    - /proc
+    - ~/.ssh
+  validate_paths: true
 ```
 
 **Optional environment overrides**
@@ -141,8 +139,6 @@ security:
 * `OLLAMA_BASE_URL` (default `http://localhost:11434`)
 * `DOCGEN_MODEL` (e.g., `qwen2.5-coder:7b`)
 * `OLLAMA_TEMPERATURE`
-* `DOCGEN_EMBED_MODEL`
-* `DOCGEN_TIMEOUT`
 
 ---
 
@@ -273,7 +269,7 @@ Main Application (main.py, analyzers, providers, config)
          ┌───────────────────────────────────┐
          │    UTILITY LAYER (src/utils/)     │
          ├───────────────────────────────────┤
-         │ ✓ PathUtils (236 lines)           │
+         │ ✓ PathUtils (241 lines)           │
          │   - Path normalization            │
          │   - Anchor generation             │
          │   - Pattern matching (glob/regex) │
@@ -289,16 +285,17 @@ Main Application (main.py, analyzers, providers, config)
          │   - Language detection            │
          │   - Sequence diagrams             │
          │                                   │
-         │ ✓ HTMLRenderer (185 lines)        │
+         │ ✓ HTMLRenderer (310 lines)        │
          │   - Markdown → HTML conversion    │
          │   - CSS theming & loading         │
          │   - Complete document building    │
+         │   - Mermaid diagram support       │
          │                                   │
          │ ✓ MarkdownBuilder (307 lines)     │
          │   - Fluent Markdown API           │
          │   - Method chaining for readability│
          │                                   │
-         │ Total: 1,208 lines of reusable    │
+         │ Total: 1,339 lines of reusable    │
          │ utilities shared across generators│
          └───────────────────────────────────┘
 ```
@@ -353,7 +350,7 @@ Project Source
 - Leverages MarkdownBuilder, TextUtils, and MermaidGenerator for output
 - Cleaner, focused code by delegating utilities
 
-**technical_doc_generator.py** (439 lines)
+**technical_doc_generator.py** (517 lines)
 - Technical Markdown and HTML documentation
 - Jinja2 templating with configurable limits
 - Uses PathUtils for exclusion patterns and path operations
