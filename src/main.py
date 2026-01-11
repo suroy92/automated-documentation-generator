@@ -25,8 +25,9 @@ from .rate_limiter import RateLimiter
 from .path_validator import PathValidator
 from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
+from .analyzers.ts_analyzer import TypeScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
-from .technical_doc_generator import MarkdownGenerator, HTMLGenerator
+from .technical_doc_generator import MarkdownGenerator, HTMLGenerator, GeneratorConfig
 from .ladom_schema import LADOMValidator
 from .providers.ollama_client import LLM, LLMConfig
 from .business_doc_generator import BusinessDocGenerator
@@ -80,7 +81,8 @@ def analyze_file(file_path: str, analyzer, file_type: str):
 def scan_and_analyze(project_path: str, config: ConfigLoader,
                      py_analyzer: PythonAnalyzer,
                      js_analyzer: JavaScriptAnalyzer,
-                     java_analyzer: JavaAnalyzer):
+                     java_analyzer: JavaAnalyzer,
+                     ts_analyzer: TypeScriptAnalyzer):
     exclude_dirs = config.get_exclude_dirs()
     files_to_analyze = []
 
@@ -95,6 +97,8 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
                 files_to_analyze.append((file_path, js_analyzer, "JavaScript"))
             elif file.endswith(".java"):
                 files_to_analyze.append((file_path, java_analyzer, "Java"))
+            elif file.endswith(".ts") or file.endswith(".tsx"):
+                files_to_analyze.append((file_path, ts_analyzer, "TypeScript"))
 
     if not files_to_analyze:
         logger.warning("No supported files found in project")
@@ -145,9 +149,10 @@ def _menu_choice() -> str:
 def _generate_technical_docs(aggregated_ladom, output_dir: str) -> Tuple[str, str]:
     md_path = os.path.join(output_dir, "documentation.technical.md")
     html_path = os.path.join(output_dir, "documentation.technical.html")
-    md = MarkdownGenerator()
+    gen_config = GeneratorConfig()
+    md = MarkdownGenerator(gen_config)
     md.generate(aggregated_ladom, md_path)
-    HTMLGenerator().generate(aggregated_ladom, html_path)
+    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
     logger.info(f"✓ Technical Markdown: {md_path}")
     logger.info(f"✓ Technical HTML:     {html_path}")
     return md_path, html_path
@@ -156,9 +161,10 @@ def _generate_technical_docs(aggregated_ladom, output_dir: str) -> Tuple[str, st
 def _generate_business_docs(aggregated_ladom, output_dir: str, llm_client: LLM) -> Tuple[str, str]:
     md_path = os.path.join(output_dir, "documentation.business.md")
     html_path = os.path.join(output_dir, "documentation.business.html")
+    gen_config = GeneratorConfig()
     biz = BusinessDocGenerator(llm_client)
     biz.generate(aggregated_ladom, md_path)
-    HTMLGenerator().generate(aggregated_ladom, html_path)
+    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
     logger.info(f"✓ Business Markdown:  {md_path}")
     logger.info(f"✓ Business HTML:      {html_path}")
     return md_path, html_path
@@ -197,10 +203,11 @@ def main():
 
     py_analyzer = PythonAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
     js_analyzer = JavaScriptAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
+    ts_analyzer = TypeScriptAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
     java_analyzer = JavaAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
 
     print("\nScanning project:", project_path)
-    aggregated_ladom = scan_and_analyze(project_path, config, py_analyzer, js_analyzer, java_analyzer)
+    aggregated_ladom = scan_and_analyze(project_path, config, py_analyzer, js_analyzer, java_analyzer, ts_analyzer)
     if not aggregated_ladom or not aggregated_ladom.get("files"):
         logger.error("No files were successfully analyzed")
         print("\nError: No supported files found or analysis failed")

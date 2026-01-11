@@ -16,12 +16,112 @@ class HTMLRenderer:
     """Centralized HTML generation and rendering."""
 
     DEFAULT_CSS = """
-body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; line-height: 1.6; padding: 24px; }
-pre { background: #0b1020; color: #e0e6ff; padding: 12px; overflow: auto; border-radius: 8px; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-h1, h2, h3, h4 { margin-top: 1.8em; }
-a { color: #005ad6; text-decoration: none; }
-.mermaid { background: #0b1020; color: #e0e6ff; padding: 8px; border-radius: 8px; }
+body { 
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
+  line-height: 1.6; 
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+  color: #333;
+}
+pre { 
+  background: #0b1020; 
+  color: #e0e6ff; 
+  padding: 16px; 
+  overflow: auto; 
+  border-radius: 8px;
+  border: 1px solid #1a2332;
+}
+code { 
+  font-family: 'Fira Code', 'Cascadia Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+pre code {
+  background: none;
+  padding: 0;
+}
+code:not(pre code) {
+  background: #f4f4f4;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #e83e8c;
+}
+h1, h2, h3, h4, h5, h6 { 
+  margin-top: 1.8em;
+  margin-bottom: 0.8em;
+  font-weight: 600;
+}
+h1 { border-bottom: 2px solid #eee; padding-bottom: 0.3em; }
+h2 { border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
+a { color: #0066cc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.mermaid { 
+  background: #0b1020; 
+  color: #e0e6ff; 
+  padding: 16px; 
+  border-radius: 8px;
+  margin: 16px 0;
+}
+details {
+  border: 1px solid #e1e4e8;
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+  background: #f6f8fa;
+}
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin: -16px;
+  padding: 16px;
+  background: #f6f8fa;
+  border-radius: 6px;
+}
+details summary:hover {
+  background: #eaeef2;
+}
+details[open] summary {
+  border-bottom: 1px solid #e1e4e8;
+  margin-bottom: 16px;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+}
+th, td {
+  border: 1px solid #ddd;
+  padding: 12px;
+  text-align: left;
+}
+th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+tr:hover {
+  background: #f6f8fa;
+}
+ul, ol {
+  padding-left: 2em;
+}
+li {
+  margin: 0.5em 0;
+}
+blockquote {
+  border-left: 4px solid #0066cc;
+  padding-left: 16px;
+  margin: 16px 0;
+  color: #666;
+}
+hr {
+  border: none;
+  border-top: 1px solid #e1e4e8;
+  margin: 24px 0;
+}
+sub {
+  color: #666;
+  font-size: 0.85em;
+}
 """
 
     @staticmethod
@@ -39,20 +139,45 @@ a { color: #005ad6; text-decoration: none; }
         str
             HTML output.
         """
-        html_text = markdown.markdown(
+        # First, extract and replace Mermaid blocks with placeholders
+        mermaid_blocks = []
+        def extract_mermaid(match):
+            mermaid_blocks.append(match.group(1))
+            return f"{{{{MERMAIDBLOCK{len(mermaid_blocks) - 1}}}}}"
+        
+        # Match ```mermaid blocks
+        md_text = re.sub(
+            r'```mermaid\n(.*?)\n```',
+            extract_mermaid,
             md_text,
-            extensions=["fenced_code", "tables", "toc"],
-            output_format="html5",
-        )
-
-        # Convert Mermaid code fences to <div class="mermaid">
-        # Match both ```mermaid and ~~~mermaid blocks
-        html_text = re.sub(
-            r'<pre><code class="language-mermaid">(.*?)</code></pre>',
-            lambda m: f'<div class="mermaid">{TextUtils.unescape_html(m.group(1))}</div>',
-            html_text,
             flags=re.DOTALL,
         )
+        
+        # Convert markdown to HTML
+        html_text = markdown.markdown(
+            md_text,
+            extensions=[
+                "extra",  # Includes fenced_code, tables, and other common features
+                "toc",
+                "nl2br",
+                "codehilite",
+                "md_in_html",  # Process markdown inside HTML blocks
+            ],
+            output_format="html5",
+            extension_configs={
+                "codehilite": {
+                    "css_class": "highlight",
+                    "guess_lang": True,
+                },
+            },
+        )
+
+        # Restore Mermaid blocks as <div class="mermaid">
+        for idx, mermaid_content in enumerate(mermaid_blocks):
+            placeholder = f"{{{{MERMAIDBLOCK{idx}}}}}"
+            mermaid_div = f'<div class="mermaid">{mermaid_content}</div>'
+            html_text = html_text.replace(f"<p>{placeholder}</p>", mermaid_div)
+            html_text = html_text.replace(placeholder, mermaid_div)
         
         return html_text
 

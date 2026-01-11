@@ -295,7 +295,7 @@ class MarkdownBuilder:
         str
             Complete Markdown document as string.
         """
-        return "\\n".join(self._lines).strip() + "\\n"
+        return "\n".join(self._lines).strip() + "\n"
 
     def clear(self) -> "MarkdownBuilder":
         """

@@ -63,7 +63,7 @@ class DocstringCache:
                 with open(self.cache_file, 'r', encoding='utf-8') as f:
                     self.cache = json.load(f)
                 logger.info(f"Loaded cache with {len(self.cache)} entries from {self.cache_file}")
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 logger.warning(f"Cache file corrupted, resetting: {e}")
                 self.cache = {}
             except (OSError, IOError) as e:
