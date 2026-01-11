@@ -103,7 +103,7 @@ This codebase contains **{{ counts.files }}** modules with **{{ counts.functions
 {{ file.summary }}
 {%- endif %}
 
-<details id="{{ file.anchor }}">
+<details id="{{ file.anchor }}" markdown="1">
 <summary><b>Module API</b> ({{ file.func_count }} function{% if file.func_count != 1 %}s{% endif %}{% if file.classes %}, {{ file.class_count }} class{% if file.class_count != 1 %}es{% endif %}{% endif %})</summary>
 
 {% if file.functions -%}

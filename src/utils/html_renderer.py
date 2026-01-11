@@ -143,7 +143,7 @@ sub {
         mermaid_blocks = []
         def extract_mermaid(match):
             mermaid_blocks.append(match.group(1))
-            return f"___MERMAID_BLOCK_{len(mermaid_blocks) - 1}___"
+            return f"{{{{MERMAIDBLOCK{len(mermaid_blocks) - 1}}}}}"
         
         # Match ```mermaid blocks
         md_text = re.sub(
@@ -161,6 +161,7 @@ sub {
                 "toc",
                 "nl2br",
                 "codehilite",
+                "md_in_html",  # Process markdown inside HTML blocks
             ],
             output_format="html5",
             extension_configs={
@@ -173,7 +174,7 @@ sub {
 
         # Restore Mermaid blocks as <div class="mermaid">
         for idx, mermaid_content in enumerate(mermaid_blocks):
-            placeholder = f"___MERMAID_BLOCK_{idx}___"
+            placeholder = f"{{{{MERMAIDBLOCK{idx}}}}}"
             mermaid_div = f'<div class="mermaid">{mermaid_content}</div>'
             html_text = html_text.replace(f"<p>{placeholder}</p>", mermaid_div)
             html_text = html_text.replace(placeholder, mermaid_div)
