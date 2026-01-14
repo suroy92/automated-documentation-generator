@@ -98,11 +98,38 @@ def _lenient_json(s: str) -> Dict[str, Any]:
         "user_journeys": [],
         "inputs": [],
         "outputs": [],
+        "dependencies": {
+            "external_services": [],
+            "third_party_apis": [],
+            "databases": [],
+            "message_queues": [],
+            "file_systems": [],
+        },
         "operations": {
             "how_to_run": [],
             "config_keys": [],
             "logs": [],
             "troubleshooting": [],
+            "deployment": {
+                "environments": [],
+                "strategy": "",
+                "prerequisites": [],
+            },
+            "monitoring": {
+                "metrics": [],
+                "alerts": [],
+                "dashboards": [],
+            },
+            "performance": {
+                "benchmarks": [],
+                "slas": [],
+                "bottlenecks": [],
+            },
+            "disaster_recovery": {
+                "backup_strategy": "",
+                "restore_procedure": [],
+                "rpo_rto": "",
+            },
         },
         "security": {"data_flow": "", "pii": "", "storage": "", "llm_usage": ""},
         "risks": [],
@@ -149,15 +176,42 @@ Return JSON with this schema:
   "kpis": ["kpi1","kpi2"],
   "capabilities": [{{"name":"", "desc":""}}],
   "user_journeys": [
-     {{"actor":"User/Stakeholder","steps":["Step 1","Step 2","Success criteria"]}}
+     {{"actor":"User/Stakeholder","steps":["Step 1","Step 2","Success criteria"],"prerequisites":[],"duration":""}}
   ],
   "inputs": ["what the app consumes"],
   "outputs": ["what the app produces"],
+  "dependencies": {{
+     "external_services": ["service name: purpose"],
+     "third_party_apis": ["API name: usage"],
+     "databases": ["DB type: purpose"],
+     "message_queues": ["queue type: purpose"],
+     "file_systems": ["storage type: purpose"]
+  }},
   "operations": {{
      "how_to_run": ["command or menu sequence"],
      "config_keys": ["KEY=meaning"],
      "logs": ["where to look"],
-     "troubleshooting": ["common issue -> quick fix"]
+     "troubleshooting": ["common issue -> quick fix"],
+     "deployment": {{
+       "environments": ["env1: description"],
+       "strategy": "blue-green/rolling/canary/etc",
+       "prerequisites": ["requirement1"]
+     }},
+     "monitoring": {{
+       "metrics": ["metric: threshold"],
+       "alerts": ["condition: action"],
+       "dashboards": ["dashboard name: purpose"]
+     }},
+     "performance": {{
+       "benchmarks": ["operation: metric"],
+       "slas": ["SLA description"],
+       "bottlenecks": ["identified bottleneck"]
+     }},
+     "disaster_recovery": {{
+       "backup_strategy": "description",
+       "restore_procedure": ["step1"],
+       "rpo_rto": "RPO: X hours, RTO: Y hours"
+     }}
   }},
   "security": {{
      "data_flow": "where data goes",
@@ -229,15 +283,57 @@ PROJECT STRUCTURE (compact LADOM):
                 if isinstance(j, dict):
                     actor = str(j.get("actor", "User"))
                     steps = j.get("steps") if isinstance(j.get("steps"), list) else []
-                    norm_j.append({"actor": actor, "steps": [str(s) for s in steps]})
+                    prereqs = j.get("prerequisites") if isinstance(j.get("prerequisites"), list) else []
+                    duration = str(j.get("duration", ""))
+                    norm_j.append({
+                        "actor": actor,
+                        "steps": [str(s) for s in steps],
+                        "prerequisites": [str(p) for p in prereqs],
+                        "duration": duration
+                    })
             data["user_journeys"] = norm_j
 
+        # Normalize dependencies
+        deps = data.get("dependencies") or {}
+        data["dependencies"] = {
+            "external_services": [str(x) for x in (deps.get("external_services") or [])],
+            "third_party_apis": [str(x) for x in (deps.get("third_party_apis") or [])],
+            "databases": [str(x) for x in (deps.get("databases") or [])],
+            "message_queues": [str(x) for x in (deps.get("message_queues") or [])],
+            "file_systems": [str(x) for x in (deps.get("file_systems") or [])],
+        }
+
         ops = data.get("operations") or {}
+        deployment = ops.get("deployment") or {}
+        monitoring = ops.get("monitoring") or {}
+        performance = ops.get("performance") or {}
+        dr = ops.get("disaster_recovery") or {}
+        
         data["operations"] = {
             "how_to_run": [str(x) for x in (ops.get("how_to_run") or [])],
             "config_keys": [str(x) for x in (ops.get("config_keys") or [])],
             "logs": [str(x) for x in (ops.get("logs") or [])],
             "troubleshooting": [str(x) for x in (ops.get("troubleshooting") or [])],
+            "deployment": {
+                "environments": [str(x) for x in (deployment.get("environments") or [])],
+                "strategy": str(deployment.get("strategy") or ""),
+                "prerequisites": [str(x) for x in (deployment.get("prerequisites") or [])],
+            },
+            "monitoring": {
+                "metrics": [str(x) for x in (monitoring.get("metrics") or [])],
+                "alerts": [str(x) for x in (monitoring.get("alerts") or [])],
+                "dashboards": [str(x) for x in (monitoring.get("dashboards") or [])],
+            },
+            "performance": {
+                "benchmarks": [str(x) for x in (performance.get("benchmarks") or [])],
+                "slas": [str(x) for x in (performance.get("slas") or [])],
+                "bottlenecks": [str(x) for x in (performance.get("bottlenecks") or [])],
+            },
+            "disaster_recovery": {
+                "backup_strategy": str(dr.get("backup_strategy") or ""),
+                "restore_procedure": [str(x) for x in (dr.get("restore_procedure") or [])],
+                "rpo_rto": str(dr.get("rpo_rto") or ""),
+            },
         }
 
         sec = data.get("security") or {}
@@ -299,6 +395,15 @@ PROJECT STRUCTURE (compact LADOM):
             builder.add_blank_line()
             for j in sections["user_journeys"]:
                 builder.add_line(f"**{j.get('actor', 'User')}**")
+                if j.get("duration"):
+                    builder.add_line(f"*Estimated Duration: {j['duration']}*")
+                    builder.add_blank_line()
+                if j.get("prerequisites"):
+                    builder.add_line("*Prerequisites:*")
+                    for p in j["prerequisites"]:
+                        builder.add_list_item(p)
+                    builder.add_blank_line()
+                builder.add_line("*Steps:*")
                 for idx, s in enumerate(j.get("steps") or [], 1):
                     builder.add_line(f"  {idx}. {s}")
                 builder.add_blank_line()
@@ -322,6 +427,37 @@ PROJECT STRUCTURE (compact LADOM):
             builder.add_code_block(cls_map, "mermaid")
             builder.add_blank_line()
 
+        # Dependencies & Integrations
+        deps = sections.get("dependencies") or {}
+        if any(deps.get(k) for k in ("external_services", "third_party_apis", "databases", "message_queues", "file_systems")):
+            builder.add_heading("Dependencies & Integrations", level=2)
+            builder.add_blank_line()
+            if deps.get("external_services"):
+                builder.add_line("**External Services**")
+                for item in deps["external_services"]:
+                    builder.add_list_item(item)
+                builder.add_blank_line()
+            if deps.get("third_party_apis"):
+                builder.add_line("**Third-Party APIs**")
+                for item in deps["third_party_apis"]:
+                    builder.add_list_item(item)
+                builder.add_blank_line()
+            if deps.get("databases"):
+                builder.add_line("**Databases**")
+                for item in deps["databases"]:
+                    builder.add_list_item(item)
+                builder.add_blank_line()
+            if deps.get("message_queues"):
+                builder.add_line("**Message Queues**")
+                for item in deps["message_queues"]:
+                    builder.add_list_item(item)
+                builder.add_blank_line()
+            if deps.get("file_systems"):
+                builder.add_line("**File Systems & Storage**")
+                for item in deps["file_systems"]:
+                    builder.add_list_item(item)
+                builder.add_blank_line()
+
         if sections.get("inputs") or sections.get("outputs"):
             builder.add_heading("Inputs & Outputs", level=2)
             builder.add_blank_line()
@@ -339,29 +475,107 @@ PROJECT STRUCTURE (compact LADOM):
         ops = sections.get("operations") or {}
         if any(
             ops.get(k) for k in ("how_to_run", "config_keys", "logs", "troubleshooting")
-        ):
+        ) or ops.get("deployment") or ops.get("monitoring") or ops.get("performance") or ops.get("disaster_recovery"):
             builder.add_heading("Operations", level=2)
             builder.add_blank_line()
+            
             if ops.get("how_to_run"):
-                builder.add_line("**How to Run**")
+                builder.add_heading("How to Run", level=3)
                 for i in ops["how_to_run"]:
                     builder.add_list_item(i)
+                builder.add_blank_line()
+            
             if ops.get("config_keys"):
-                builder.add_line("")
-                builder.add_line("**Config Keys**")
+                builder.add_heading("Configuration", level=3)
                 for i in ops["config_keys"]:
                     builder.add_list_item(i)
+                builder.add_blank_line()
+            
+            # Deployment section
+            deployment = ops.get("deployment") or {}
+            if deployment.get("environments") or deployment.get("strategy") or deployment.get("prerequisites"):
+                builder.add_heading("Deployment", level=3)
+                if deployment.get("strategy"):
+                    builder.add_line(f"**Strategy:** {deployment['strategy']}")
+                    builder.add_blank_line()
+                if deployment.get("environments"):
+                    builder.add_line("**Environments:**")
+                    for env in deployment["environments"]:
+                        builder.add_list_item(env)
+                    builder.add_blank_line()
+                if deployment.get("prerequisites"):
+                    builder.add_line("**Prerequisites:**")
+                    for prereq in deployment["prerequisites"]:
+                        builder.add_list_item(prereq)
+                    builder.add_blank_line()
+            
+            # Monitoring section
+            monitoring = ops.get("monitoring") or {}
+            if monitoring.get("metrics") or monitoring.get("alerts") or monitoring.get("dashboards"):
+                builder.add_heading("Monitoring", level=3)
+                if monitoring.get("metrics"):
+                    builder.add_line("**Key Metrics:**")
+                    for metric in monitoring["metrics"]:
+                        builder.add_list_item(metric)
+                    builder.add_blank_line()
+                if monitoring.get("alerts"):
+                    builder.add_line("**Alerts:**")
+                    for alert in monitoring["alerts"]:
+                        builder.add_list_item(alert)
+                    builder.add_blank_line()
+                if monitoring.get("dashboards"):
+                    builder.add_line("**Dashboards:**")
+                    for dashboard in monitoring["dashboards"]:
+                        builder.add_list_item(dashboard)
+                    builder.add_blank_line()
+            
+            # Performance section
+            performance = ops.get("performance") or {}
+            if performance.get("benchmarks") or performance.get("slas") or performance.get("bottlenecks"):
+                builder.add_heading("Performance", level=3)
+                if performance.get("benchmarks"):
+                    builder.add_line("**Benchmarks:**")
+                    for bench in performance["benchmarks"]:
+                        builder.add_list_item(bench)
+                    builder.add_blank_line()
+                if performance.get("slas"):
+                    builder.add_line("**SLAs:**")
+                    for sla in performance["slas"]:
+                        builder.add_list_item(sla)
+                    builder.add_blank_line()
+                if performance.get("bottlenecks"):
+                    builder.add_line("**Known Bottlenecks:**")
+                    for bottleneck in performance["bottlenecks"]:
+                        builder.add_list_item(bottleneck)
+                    builder.add_blank_line()
+            
+            # Disaster Recovery section
+            dr = ops.get("disaster_recovery") or {}
+            if dr.get("backup_strategy") or dr.get("restore_procedure") or dr.get("rpo_rto"):
+                builder.add_heading("Disaster Recovery", level=3)
+                if dr.get("backup_strategy"):
+                    builder.add_line(f"**Backup Strategy:** {dr['backup_strategy']}")
+                    builder.add_blank_line()
+                if dr.get("rpo_rto"):
+                    builder.add_line(f"**Recovery Objectives:** {dr['rpo_rto']}")
+                    builder.add_blank_line()
+                if dr.get("restore_procedure"):
+                    builder.add_line("**Restore Procedure:**")
+                    for step in dr["restore_procedure"]:
+                        builder.add_list_item(step)
+                    builder.add_blank_line()
+            
             if ops.get("logs"):
-                builder.add_line("")
-                builder.add_line("**Logs to Watch**")
+                builder.add_heading("Logging", level=3)
                 for i in ops["logs"]:
                     builder.add_list_item(i)
+                builder.add_blank_line()
+            
             if ops.get("troubleshooting"):
-                builder.add_line("")
-                builder.add_line("**Troubleshooting**")
+                builder.add_heading("Troubleshooting", level=3)
                 for i in ops["troubleshooting"]:
                     builder.add_list_item(i)
-            builder.add_blank_line()
+                builder.add_blank_line()
 
         sec = sections.get("security") or {}
         if any(sec.get(k) for k in ("data_flow", "pii", "storage", "llm_usage")):

@@ -86,10 +86,29 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
     exclude_dirs = config.get_exclude_dirs()
     files_to_analyze = []
 
+    # Patterns for files to exclude (test files, config files, etc.)
+    exclude_file_patterns = [
+        '.spec.ts', '.spec.js', '.test.ts', '.test.js',  # Test files
+        '.spec.tsx', '.test.tsx',  # React test files
+        'test.ts', 'test.js',  # Generic test files
+        'karma.conf.js', 'jest.config.js', 'webpack.config.js',  # Config files
+        'polyfills.ts', 'polyfills.js',  # Polyfills
+        '.d.ts',  # TypeScript declaration files
+    ]
+
+    def should_exclude_file(filename: str) -> bool:
+        """Check if file should be excluded based on patterns."""
+        filename_lower = filename.lower()
+        return any(pattern in filename_lower for pattern in exclude_file_patterns)
+
     logger.info("Scanning project directory...")
     for root, dirs, files in os.walk(project_path):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for file in files:
+            # Skip excluded files
+            if should_exclude_file(file):
+                continue
+                
             file_path = os.path.join(root, file)
             if file.endswith(".py"):
                 files_to_analyze.append((file_path, py_analyzer, "Python"))

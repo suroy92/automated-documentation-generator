@@ -34,15 +34,18 @@ TS_ARROW_RE = re.compile(
     re.MULTILINE,
 )
 
-# Classes & methods
+# Classes & methods - Updated to handle Angular components with decorators and exports
+# Matches: export class Name, @Decorator class Name, class Name extends/implements X
 TS_CLASS_RE = re.compile(
-    r"(^|\n)\s*class\s+(?P<name>[A-Za-z_$][\w$]*)[^{]*\{(?P<body>.*?)}",
-    re.DOTALL,
+    r"(?:^|\n)\s*(?:export\s+)?(?:@\w+\([^\)]*\)\s*)*(?:export\s+)?class\s+(?P<name>[A-Za-z_$][\w$]*)(?:\s+extends\s+[A-Za-z_$][\w$<>,\s]*)?(?:\s+implements\s+[A-Za-z_$][\w$<>,\s]*)?\s*\{(?P<body>.*?)\n\}",
+    re.DOTALL | re.MULTILINE,
 )
 
 # Classic methods: methodName(a: T, b?: U): R { ... }
+# Also handles: public methodName, private methodName, async methodName, etc.
+# Excludes: if, for, while, switch, catch - common control structures
 TS_METHOD_RE = re.compile(
-    r"\n\s*(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*(?::\s*[^\{\n]+)?\s*\{",
+    r"\n\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|readonly\s+)*(?P<name>(?!if|for|while|switch|catch|with)\b[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*(?::\s*[^\{\n]+)?\s*\{",
     re.MULTILINE,
 )
 
@@ -192,6 +195,8 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                     },
                     "throws": details.get("throws") or [],
                     "examples": details.get("examples") or [],
+                    "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
+                    "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
                     "lines": {"start": m_start, "end": None},
                     "file_path": file_path,
                     "language_hint": "typescript",
@@ -258,3 +263,52 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                 if depth == 0:
                     return src[i:j+1]
         return src[i:]
+
+    def _build_function_symbol(
+        self,
+        name: str,
+        signature: str,
+        args: str,
+        code_snippet: str,
+        file_path: str,
+        start_line: int,
+        end_line: int,
+        context: str,
+        is_constructor: bool,
+        class_name: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build a function/method symbol dict with LLM-generated details."""
+        doc, details = self.generate_doc(code_snippet, node_name=name, context=context)
+        
+        # Get summary
+        summary = (details.get("summary") or "").strip()
+        
+        # Handle constructor special case
+        if is_constructor and class_name:
+            if not summary or class_name not in summary:
+                summary = f"Constructs a {class_name} instance."
+        
+        # Merge parameters
+        params = self._merge_params_ts(args, details.get("params") or [])
+        
+        # Get returns
+        dret = details.get("returns") or {}
+        returns = {
+            "type": (dret.get("type") or "").strip(),
+            "description": (dret.get("desc") or dret.get("description") or "").strip(),
+        }
+        
+        return {
+            "name": name,
+            "signature": signature,
+            "description": summary,
+            "parameters": params,
+            "returns": returns,
+            "throws": details.get("throws") or [],
+            "examples": details.get("examples") or [],
+            "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
+            "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
+            "lines": {"start": start_line, "end": end_line},
+            "file_path": file_path,
+            "language_hint": "typescript",
+        }

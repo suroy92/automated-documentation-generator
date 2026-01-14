@@ -335,6 +335,8 @@ class JavaScriptAnalyzer(BaseAnalyzer):
             "returns": returns,
             "throws": details.get("throws") or [],
             "examples": examples,
+            "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
+            "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
             "lines": {"start": start_line, "end": end_line},
             "file_path": file_path,
             "language_hint": "javascript",

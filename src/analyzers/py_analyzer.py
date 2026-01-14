@@ -97,6 +97,8 @@ class PythonAnalyzer(BaseAnalyzer):
             "returns": returns,
             "throws": details.get("throws") or [],
             "examples": details.get("examples") or [],
+            "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
+            "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
             "decorators": [self._expr_to_str(d) for d in getattr(node, "decorator_list", [])] if hasattr(node, "decorator_list") else [],
             "async": async_fn,
             "lines": lines,

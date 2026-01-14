@@ -171,10 +171,23 @@ Return STRICT JSON only with this schema:
   "params": [{{"name":"", "type":"", "default": null, "desc":"", "optional": false}}],
   "returns": {{"type":"", "desc":""}},
   "throws": [],
-  "examples": [],
-  "notes": []
+  "examples": [{{"title":"", "code":"", "description":""}}],
+  "notes": [],
+  "performance": {{"time_complexity":"", "space_complexity":"", "notes":""}},
+  "error_handling": {{"strategy":"", "recovery":"", "logging":""}}
 }}
-- For "examples", output a minimal code snippet as a plain string (no fencing).
+- For "examples", provide up to 3 examples with:
+  * title: Brief name (e.g., "Basic Usage", "Edge Case: Empty Input")
+  * code: Minimal code snippet (no fencing)
+  * description: What the example demonstrates
+- For "performance":
+  * time_complexity: Big O notation (e.g., "O(n)", "O(log n)", "O(1)")
+  * space_complexity: Big O notation for memory usage
+  * notes: Any performance considerations or bottlenecks
+- For "error_handling":
+  * strategy: How errors are handled (e.g., "try-catch with fallback", "returns None on error")
+  * recovery: Recovery approach if applicable
+  * logging: What gets logged and when
 - Keep types simple (e.g., "string", "number", "object") unless explicitly present in the code.
 - Language should match the code.
 
@@ -203,6 +216,8 @@ Return STRICT JSON only with this schema:
             "throws": [],
             "examples": [],
             "notes": [],
+            "performance": {"time_complexity": "", "space_complexity": "", "notes": ""},
+            "error_handling": {"strategy": "", "recovery": "", "logging": ""},
         }
 
     def _normalize_details(self, details: Dict[str, Any]) -> Dict[str, Any]:
@@ -241,13 +256,52 @@ Return STRICT JSON only with this schema:
             raw_notes = [raw_notes]
         notes = [_to_text(n).strip() for n in raw_notes if n is not None and _to_text(n).strip()]
 
+        # Normalize examples to include title and description
+        normalized_examples = []
+        for e in raw_examples:
+            if isinstance(e, dict):
+                normalized_examples.append({
+                    "title": _to_text(e.get("title", "")).strip(),
+                    "code": _to_text(e.get("code", "")).strip(),
+                    "description": _to_text(e.get("description", "") or e.get("desc", "")).strip(),
+                })
+            elif e is not None and _to_text(e).strip():
+                # Simple string example - convert to dict format
+                normalized_examples.append({
+                    "title": "",
+                    "code": _to_text(e).strip(),
+                    "description": "",
+                })
+        
+        # Normalize performance metadata
+        raw_perf = details.get("performance") or {}
+        if not isinstance(raw_perf, dict):
+            raw_perf = {}
+        performance = {
+            "time_complexity": _to_text(raw_perf.get("time_complexity", "")).strip(),
+            "space_complexity": _to_text(raw_perf.get("space_complexity", "")).strip(),
+            "notes": _to_text(raw_perf.get("notes", "")).strip(),
+        }
+        
+        # Normalize error handling metadata
+        raw_err = details.get("error_handling") or {}
+        if not isinstance(raw_err, dict):
+            raw_err = {}
+        error_handling = {
+            "strategy": _to_text(raw_err.get("strategy", "")).strip(),
+            "recovery": _to_text(raw_err.get("recovery", "")).strip(),
+            "logging": _to_text(raw_err.get("logging", "")).strip(),
+        }
+
         return {
             "summary": summary,
             "params": params,
             "returns": returns,
             "throws": throws,
-            "examples": examples,
+            "examples": normalized_examples,
             "notes": notes,
+            "performance": performance,
+            "error_handling": error_handling,
         }
 
     def _format_google_style_docstring(self, d: Dict[str, Any]) -> str:
@@ -303,7 +357,16 @@ Return STRICT JSON only with this schema:
         """
         if not self.client:
             logger.warning(f"No LLM client available for {node_name}")
-            empty = {"summary": "", "params": [], "returns": {"type": "", "desc": ""}, "throws": [], "examples": [], "notes": []}
+            empty = {
+                "summary": "", 
+                "params": [], 
+                "returns": {"type": "", "desc": ""}, 
+                "throws": [], 
+                "examples": [], 
+                "notes": [],
+                "performance": {"time_complexity": "", "space_complexity": "", "notes": ""},
+                "error_handling": {"strategy": "", "recovery": "", "logging": ""},
+            }
             return "No documentation available.", empty
 
         ck = self._cache_key(code_snippet)
@@ -333,7 +396,16 @@ Return STRICT JSON only with this schema:
             details = self._normalize_details(details)
         except Exception as e:
             logger.error(f"LLM failed for {node_name}: {e}")
-            details = {"summary": "", "params": [], "returns": {"type": "", "desc": ""}, "throws": [], "examples": [], "notes": []}
+            details = {
+                "summary": "", 
+                "params": [], 
+                "returns": {"type": "", "desc": ""}, 
+                "throws": [], 
+                "examples": [], 
+                "notes": [],
+                "performance": {"time_complexity": "", "space_complexity": "", "notes": ""},
+                "error_handling": {"strategy": "", "recovery": "", "logging": ""},
+            }
 
         if self.cache:
             try:

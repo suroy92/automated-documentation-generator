@@ -132,6 +132,19 @@ This codebase contains **{{ counts.files }}** modules with **{{ counts.functions
 
 **Returns:** {% if fn.returns.type %}`{{ fn.returns.type }}`{% endif %}{% if fn.returns.description %} – {{ fn.returns.description }}{% endif %}
 {%- endif %}
+{%- if fn.performance and (fn.performance.time_complexity or fn.performance.space_complexity or fn.performance.notes) %}
+
+**Performance:**
+{%- if fn.performance.time_complexity %}
+- Time Complexity: {{ fn.performance.time_complexity }}
+{%- endif %}
+{%- if fn.performance.space_complexity %}
+- Space Complexity: {{ fn.performance.space_complexity }}
+{%- endif %}
+{%- if fn.performance.notes %}
+- {{ fn.performance.notes }}
+{%- endif %}
+{%- endif %}
 {%- if fn.throws %}
 
 **Raises:**
@@ -140,14 +153,34 @@ This codebase contains **{{ counts.files }}** modules with **{{ counts.functions
 - {{ t }}
 {% endfor -%}
 {%- endif %}
+{%- if fn.error_handling and (fn.error_handling.strategy or fn.error_handling.recovery or fn.error_handling.logging) %}
+
+**Error Handling:**
+{%- if fn.error_handling.strategy %}
+- Strategy: {{ fn.error_handling.strategy }}
+{%- endif %}
+{%- if fn.error_handling.recovery %}
+- Recovery: {{ fn.error_handling.recovery }}
+{%- endif %}
+{%- if fn.error_handling.logging %}
+- Logging: {{ fn.error_handling.logging }}
+{%- endif %}
+{%- endif %}
 {%- if fn.examples %}
 
 **Example:**
 
-{% for e in fn.examples[:2] -%}
+{% for e in fn.examples[:3] -%}
+{%- if e.title %}
+*{{ e.title }}*
+{% endif -%}
 ```{{ e.language_hint or "" }}
 {{ e.code.strip() }}
 ```
+{%- if e.description %}
+{{ e.description }}
+{%- endif %}
+
 {% endfor -%}
 {%- endif %}
 {%- if fn.source %}
@@ -198,6 +231,19 @@ class {{ cl.name }}
 
 **Returns:** {% if m.returns.type %}`{{ m.returns.type }}`{% endif %}{% if m.returns.description %} – {{ m.returns.description }}{% endif %}
 {%- endif %}
+{%- if m.performance and (m.performance.time_complexity or m.performance.space_complexity or m.performance.notes) %}
+
+**Performance:**
+{%- if m.performance.time_complexity %}
+- Time Complexity: {{ m.performance.time_complexity }}
+{%- endif %}
+{%- if m.performance.space_complexity %}
+- Space Complexity: {{ m.performance.space_complexity }}
+{%- endif %}
+{%- if m.performance.notes %}
+- {{ m.performance.notes }}
+{%- endif %}
+{%- endif %}
 {%- if m.throws %}
 
 **Raises:**
@@ -206,14 +252,34 @@ class {{ cl.name }}
 - {{ t }}
 {% endfor -%}
 {%- endif %}
+{%- if m.error_handling and (m.error_handling.strategy or m.error_handling.recovery or m.error_handling.logging) %}
+
+**Error Handling:**
+{%- if m.error_handling.strategy %}
+- Strategy: {{ m.error_handling.strategy }}
+{%- endif %}
+{%- if m.error_handling.recovery %}
+- Recovery: {{ m.error_handling.recovery }}
+{%- endif %}
+{%- if m.error_handling.logging %}
+- Logging: {{ m.error_handling.logging }}
+{%- endif %}
+{%- endif %}
 {%- if m.examples %}
 
 **Example:**
 
-{% for e in m.examples[:2] -%}
+{% for e in m.examples[:3] -%}
+{%- if e.title %}
+*{{ e.title }}*
+{% endif -%}
 ```{{ e.language_hint or "" }}
 {{ e.code.strip() }}
 ```
+{%- if e.description %}
+{{ e.description }}
+{%- endif %}
+
 {% endfor -%}
 {%- endif %}
 {%- if m.source %}
@@ -296,6 +362,15 @@ def _validate_ladom(ladom: Dict[str, Any]) -> None:
                 if "examples" in item and not isinstance(item["examples"], list):
                     raise ValueError(
                         f"Item {item['name']} in {kind} of {f['path']} has non-list 'examples'."
+                    )
+                # Enhanced fields (optional)
+                if "performance" in item and not isinstance(item["performance"], dict):
+                    raise ValueError(
+                        f"Item {item['name']} in {kind} of {f['path']} has non-dict 'performance'."
+                    )
+                if "error_handling" in item and not isinstance(item["error_handling"], dict):
+                    raise ValueError(
+                        f"Item {item['name']} in {kind} of {f['path']} has non-dict 'error_handling'."
                     )
 
 
@@ -545,13 +620,27 @@ class MarkdownGenerator:
             if isinstance(e, dict):
                 e.setdefault("code", "")
                 e.setdefault("language_hint", "")
+                e.setdefault("title", "")
+                e.setdefault("description", "")
                 normalized_examples.append(e)
             elif isinstance(e, str):
                 # Convert string examples to dict format
-                normalized_examples.append({"code": e, "language_hint": ""})
+                normalized_examples.append({"code": e, "language_hint": "", "title": "", "description": ""})
             else:
                 # Skip invalid example types
                 continue
+        
+        # Extract performance metadata
+        perf = dict(sym.get("performance", {}) or {})
+        perf.setdefault("time_complexity", "")
+        perf.setdefault("space_complexity", "")
+        perf.setdefault("notes", "")
+        
+        # Extract error handling metadata
+        error_handling = dict(sym.get("error_handling", {}) or {})
+        error_handling.setdefault("strategy", "")
+        error_handling.setdefault("recovery", "")
+        error_handling.setdefault("logging", "")
 
         return {
             "name": sym.get("name", "") or "",
@@ -562,6 +651,8 @@ class MarkdownGenerator:
             "throws": list(sym.get("throws", []) or []),
             "examples": normalized_examples,
             "source": src,
+            "performance": perf,
+            "error_handling": error_handling,
         }
 
     def _enrich_class(
