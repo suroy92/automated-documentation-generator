@@ -39,6 +39,9 @@ class PythonAnalyzer(BaseAnalyzer):
             "summary": module_doc.strip(),
             "functions": [],
             "classes": [],
+            "imports": self._extract_imports(tree),
+            "constants": self._extract_constants(tree),
+            "global_variables": self._extract_global_variables(tree),
         }
 
         for node in tree.body:
@@ -62,6 +65,15 @@ class PythonAnalyzer(BaseAnalyzer):
         returns_ann = self._annotation_to_str(getattr(node, "returns", None))
         lines = {"start": getattr(node, "lineno", None), "end": getattr(node, "end_lineno", None)}
         code_snippet = ast.get_source_segment(source, node) or ""
+
+        # Extract decorators
+        decorators = [self._expr_to_str(d) for d in getattr(node, "decorator_list", [])] if hasattr(node, "decorator_list") else []
+
+        # Extract function calls (dependencies)
+        function_calls = self._extract_function_calls(node)
+
+        # Analyze complexity
+        complexity = self._analyze_complexity(node)
 
         context = f"python {'async ' if async_fn else ''}function {name}{signature}"
         docstring, details = self.generate_doc(code_snippet, node_name=name, context=context)
@@ -99,8 +111,10 @@ class PythonAnalyzer(BaseAnalyzer):
             "examples": details.get("examples") or [],
             "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
             "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
-            "decorators": [self._expr_to_str(d) for d in getattr(node, "decorator_list", [])] if hasattr(node, "decorator_list") else [],
+            "decorators": decorators,
             "async": async_fn,
+            "function_calls": function_calls,
+            "complexity": complexity,
             "lines": lines,
             "file_path": file_path,
             "language_hint": "python",
@@ -112,18 +126,74 @@ class PythonAnalyzer(BaseAnalyzer):
         bases = [self._expr_to_str(b) for b in node.bases]
         class_doc = ast.get_docstring(node) or ""
 
+        # Extract decorators
+        decorators = [self._expr_to_str(d) for d in node.decorator_list]
+
+        # Extract class attributes and methods
         methods: List[Dict[str, Any]] = []
+        class_attributes: List[Dict[str, Any]] = []
+
         for child in node.body:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 m = self._process_function(child, source, file_path, node)
                 if m:
+                    # Identify special methods
+                    method_name = m["name"]
+                    if method_name == "__init__":
+                        m["is_constructor"] = True
+                    elif method_name.startswith("__") and method_name.endswith("__"):
+                        m["is_magic"] = True
+                    elif method_name.startswith("_") and not method_name.startswith("__"):
+                        m["is_protected"] = True
+                    else:
+                        m["is_public"] = True
+
+                    # Check if it's a static or class method
+                    for dec in m.get("decorators", []):
+                        if "staticmethod" in dec:
+                            m["is_static"] = True
+                        elif "classmethod" in dec:
+                            m["is_classmethod"] = True
+                        elif "property" in dec:
+                            m["is_property"] = True
+
                     methods.append(m)
+
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                # Class-level annotated attributes
+                attr_name = child.target.id
+                attr_type = self._annotation_to_str(child.annotation)
+                attr_value = self._expr_to_str(child.value) if child.value else None
+
+                class_attributes.append({
+                    "name": attr_name,
+                    "type": attr_type,
+                    "value": attr_value,
+                    "line": child.lineno,
+                })
+
+            elif isinstance(child, ast.Assign):
+                # Class-level assignments
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        attr_name = target.id
+                        attr_value = self._expr_to_str(child.value)
+                        attr_type = self._infer_type_from_value(child.value)
+
+                        class_attributes.append({
+                            "name": attr_name,
+                            "type": attr_type,
+                            "value": attr_value,
+                            "line": child.lineno,
+                        })
 
         return {
             "name": cls_name,
             "description": class_doc.strip(),
             "extends": ", ".join(bases) if bases else "",
+            "decorators": decorators,
             "methods": methods,
+            "attributes": class_attributes,
             "lines": {"start": node.lineno, "end": getattr(node, "end_lineno", node.lineno)},
             "file_path": file_path,
             "language_hint": "python",
@@ -198,3 +268,204 @@ class PythonAnalyzer(BaseAnalyzer):
             if isinstance(node, Subscript):
                 return f"{self._expr_to_str(node.value)}[{self._expr_to_str(node.slice)}]"
             return ""
+
+    # ------------------------ Enhanced AST extraction methods ------------------------
+
+    def _extract_imports(self, tree: ast.AST) -> List[Dict[str, Any]]:
+        """Extract all import statements with detailed information."""
+        imports = []
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.append({
+                        "type": "import",
+                        "module": alias.name,
+                        "alias": alias.asname,
+                        "from": None,
+                        "line": node.lineno,
+                    })
+
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    imports.append({
+                        "type": "from_import",
+                        "module": module,
+                        "name": alias.name,
+                        "alias": alias.asname,
+                        "from": module,
+                        "line": node.lineno,
+                        "level": node.level,  # Relative import level (0 = absolute)
+                    })
+
+        return imports
+
+    def _extract_constants(self, tree: ast.AST) -> List[Dict[str, Any]]:
+        """Extract module-level constants (UPPER_CASE variables)."""
+        constants = []
+
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        name = target.id
+                        # Convention: UPPER_CASE names are constants
+                        if name.isupper() and not name.startswith("_"):
+                            value = self._expr_to_str(node.value)
+                            constants.append({
+                                "name": name,
+                                "value": value,
+                                "type": self._infer_type_from_value(node.value),
+                                "line": node.lineno,
+                            })
+
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    name = node.target.id
+                    if name.isupper() and not name.startswith("_"):
+                        value = self._expr_to_str(node.value) if node.value else None
+                        constants.append({
+                            "name": name,
+                            "value": value,
+                            "type": self._annotation_to_str(node.annotation),
+                            "line": node.lineno,
+                        })
+
+        return constants
+
+    def _extract_global_variables(self, tree: ast.AST) -> List[Dict[str, Any]]:
+        """Extract module-level variables (non-constants)."""
+        variables = []
+
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        name = target.id
+                        # Skip constants, private, and dunder variables
+                        if not name.isupper() and not name.startswith("_"):
+                            value = self._expr_to_str(node.value)
+                            variables.append({
+                                "name": name,
+                                "value": value,
+                                "type": self._infer_type_from_value(node.value),
+                                "line": node.lineno,
+                            })
+
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    name = node.target.id
+                    if not name.isupper() and not name.startswith("_"):
+                        value = self._expr_to_str(node.value) if node.value else None
+                        variables.append({
+                            "name": name,
+                            "value": value,
+                            "type": self._annotation_to_str(node.annotation),
+                            "line": node.lineno,
+                        })
+
+        return variables
+
+    def _infer_type_from_value(self, node: ast.AST) -> str:
+        """Infer Python type from AST node."""
+        if isinstance(node, ast.Constant):
+            val = node.value
+            if isinstance(val, bool):
+                return "bool"
+            elif isinstance(val, int):
+                return "int"
+            elif isinstance(val, float):
+                return "float"
+            elif isinstance(val, str):
+                return "str"
+            elif isinstance(val, bytes):
+                return "bytes"
+            elif val is None:
+                return "None"
+        elif isinstance(node, ast.List):
+            return "list"
+        elif isinstance(node, ast.Dict):
+            return "dict"
+        elif isinstance(node, ast.Set):
+            return "set"
+        elif isinstance(node, ast.Tuple):
+            return "tuple"
+        elif isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+            return "function"
+        elif isinstance(node, ast.ListComp):
+            return "list"
+        elif isinstance(node, ast.DictComp):
+            return "dict"
+        elif isinstance(node, ast.SetComp):
+            return "set"
+        elif isinstance(node, ast.GeneratorExp):
+            return "generator"
+
+        return ""
+
+    def _extract_function_calls(self, node: ast.AST) -> List[str]:
+        """Extract all function calls within a node."""
+        calls = []
+
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                func_name = self._get_call_name(child.func)
+                if func_name:
+                    calls.append(func_name)
+
+        return list(set(calls))  # Remove duplicates
+
+    def _get_call_name(self, func_node: ast.AST) -> str:
+        """Get the name of a called function."""
+        if isinstance(func_node, ast.Name):
+            return func_node.id
+        elif isinstance(func_node, ast.Attribute):
+            # For chained calls like obj.method()
+            return self._expr_to_str(func_node)
+        return ""
+
+    def _analyze_complexity(self, node: ast.AST) -> Dict[str, Any]:
+        """Analyze code complexity metrics."""
+        complexity = {
+            "cyclomatic": self._calculate_cyclomatic_complexity(node),
+            "nesting_depth": self._calculate_nesting_depth(node),
+            "num_branches": 0,
+            "num_loops": 0,
+        }
+
+        for child in ast.walk(node):
+            if isinstance(child, (ast.If, ast.IfExp)):
+                complexity["num_branches"] += 1
+            elif isinstance(child, (ast.For, ast.While, ast.AsyncFor)):
+                complexity["num_loops"] += 1
+
+        return complexity
+
+    def _calculate_cyclomatic_complexity(self, node: ast.AST) -> int:
+        """Calculate cyclomatic complexity (rough approximation)."""
+        complexity = 1  # Base complexity
+
+        for child in ast.walk(node):
+            # Each decision point adds 1 to complexity
+            if isinstance(child, (ast.If, ast.While, ast.For, ast.ExceptHandler)):
+                complexity += 1
+            elif isinstance(child, ast.BoolOp):
+                # and/or operators add complexity
+                complexity += len(child.values) - 1
+
+        return complexity
+
+    def _calculate_nesting_depth(self, node: ast.AST, current_depth: int = 0) -> int:
+        """Calculate maximum nesting depth."""
+        max_depth = current_depth
+
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+                depth = self._calculate_nesting_depth(child, current_depth + 1)
+                max_depth = max(max_depth, depth)
+            else:
+                depth = self._calculate_nesting_depth(child, current_depth)
+                max_depth = max(max_depth, depth)
+
+        return max_depth

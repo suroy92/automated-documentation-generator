@@ -1,314 +1,640 @@
 """
-TypeScript analyzer for extracting high-level symbols.
+TypeScript analyzer with AST-based parsing and regex fallback.
 
-Supported constructs (initial version):
-- Top-level functions:  function name(args: T): R { ... }
-- Top-level arrow functions:  const name = (args: T) => { ... }
-- Classes and methods:  methodName(a: T, b?: U): R { ... }
-- Interfaces: method signatures collected as class-like methods
-
-Notes:
-- This analyzer is regex-based (no TypeScript compiler bindings) to keep runtime light.
-- Parameter parsing strips TypeScript types/optional markers/defaults to derive names.
+This module provides comprehensive TypeScript code analysis using tree-sitter
+for AST parsing when available, with intelligent regex-based fallback.
 """
 
-from __future__ import annotations
 import logging
 import re
-from typing import Any, Dict, List, Optional
-
+from typing import Dict, List, Optional, Any
 from .base_analyzer import BaseAnalyzer
 
 logger = logging.getLogger(__name__)
 
-
-# Top-level functions: function name(args: T): R { ... }
-TS_FUNC_RE = re.compile(
-    r"(^|\n)\s*function\s+(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*(?::\s*[^\{\n]+)?\s*\{",
-    re.MULTILINE,
-)
-
-# Top-level arrow functions: const name = (args: T) => { ... }
-TS_ARROW_RE = re.compile(
-    r"(^|\n)\s*const\s+(?P<name>[A-Za-z_$][\w$]*)\s*=?\s*(?:async\s+)?\((?P<args>[^)]*)\)\s*(?::\s*[^=\n]+)?\s*=>\s*\{",
-    re.MULTILINE,
-)
-
-# Classes & methods - Updated to handle Angular components with decorators and exports
-# Matches: export class Name, @Decorator class Name, class Name extends/implements X
-TS_CLASS_RE = re.compile(
-    r"(?:^|\n)\s*(?:export\s+)?(?:@\w+\([^\)]*\)\s*)*(?:export\s+)?class\s+(?P<name>[A-Za-z_$][\w$]*)(?:\s+extends\s+[A-Za-z_$][\w$<>,\s]*)?(?:\s+implements\s+[A-Za-z_$][\w$<>,\s]*)?\s*\{(?P<body>.*?)\n\}",
-    re.DOTALL | re.MULTILINE,
-)
-
-# Classic methods: methodName(a: T, b?: U): R { ... }
-# Also handles: public methodName, private methodName, async methodName, etc.
-# Excludes: if, for, while, switch, catch - common control structures
-TS_METHOD_RE = re.compile(
-    r"\n\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+|readonly\s+)*(?P<name>(?!if|for|while|switch|catch|with)\b[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*(?::\s*[^\{\n]+)?\s*\{",
-    re.MULTILINE,
-)
-
-# Interface and method signatures (no bodies)
-TS_INTERFACE_RE = re.compile(
-    r"(^|\n)\s*interface\s+(?P<name>[A-Za-z_$][\w$]*)[^{]*\{(?P<body>.*?)}",
-    re.DOTALL,
-)
-TS_INTERFACE_METHOD_RE = re.compile(
-    r"\n\s*(?P<name>[A-Za-z_$][\w$]*)\s*\((?P<args>[^)]*)\)\s*:\s*(?P<ret>[A-Za-z_$][\w\[\]\.\|<>,\s]*)\s*;",
-    re.MULTILINE,
-)
+# Try to import tree-sitter for AST parsing
+try:
+    from tree_sitter import Language, Parser
+    try:
+        from tree_sitter_typescript import language_typescript
+        HAS_TREE_SITTER = True
+    except ImportError:
+        HAS_TREE_SITTER = False
+except ImportError:
+    HAS_TREE_SITTER = False
 
 
 class TypeScriptAnalyzer(BaseAnalyzer):
+    """
+    Analyzer for TypeScript code.
+    
+    Uses tree-sitter for accurate AST parsing when available,
+    falls back to regex patterns otherwise.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.parser = None
+        
+        # Initialize tree-sitter if available
+        if HAS_TREE_SITTER:
+            try:
+                self.parser = Parser()
+                ts_language = Language(language_typescript())
+                self.parser.set_language(ts_language)
+            except Exception:
+                self.parser = None
+    
     def _get_language_name(self) -> str:
         return "typescript"
-
+    
     def analyze(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Analyze TypeScript code and extract structural information.
+        
+        Args:
+            file_path: Path to the TypeScript file
+            
+        Returns:
+            Dictionary containing extracted code structure
+        """
         source = self._safe_read_file(file_path)
         if source is None:
             return None
-
-        file_entry: Dict[str, Any] = {
-            "path": file_path,
-            "summary": "",
-            "functions": [],
-            "classes": [],
+        
+        # Try AST-based analysis first if tree-sitter is available
+        if HAS_TREE_SITTER and self.parser:
+            try:
+                result = self._analyze_with_ast(source, file_path)
+                if result:
+                    return result
+            except Exception as e:
+                logger.warning(f"AST parsing failed for {file_path}: {e}, falling back to regex")
+        
+        # Use regex fallback
+        return self._analyze_with_regex(source, file_path)
+    
+    def _analyze_with_ast(self, source: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Analyze TypeScript using tree-sitter AST parsing."""
+        tree = self.parser.parse(bytes(source, "utf8"))
+        root_node = tree.root_node
+        
+        result = {
+            'imports': [],
+            'exports': [],
+            'classes': [],
+            'interfaces': [],
+            'functions': [],
+            'type_aliases': [],
+            'enums': [],
+            'constants': [],
+            'dependencies': []
         }
-
-        # --- Top-level function declarations ---
-        for m in TS_FUNC_RE.finditer(source):
-            name = m.group("name")
-            raw_args = m.group("args")
-            args_clean = self._strip_types_from_args(raw_args)
-            start_line = source.count("\n", 0, m.start()) + 1
-            snippet = self._extract_brace_block(source, m.end() - 1)
-            end_line = start_line + snippet.count("\n")
-            sym = self._build_function_symbol(
-                name=name,
-                signature=f"({raw_args.strip()})",
-                args=args_clean,
-                code_snippet=snippet,
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                context=f"function {name}({raw_args.strip()})",
-                is_constructor=False,
-                class_name=None,
-            )
-            file_entry["functions"].append(sym)
-
-        # --- Top-level arrow functions ---
-        for m in TS_ARROW_RE.finditer(source):
-            name = m.group("name")
-            raw_args = m.group("args")
-            args_clean = self._strip_types_from_args(raw_args)
-            start_line = source.count("\n", 0, m.start()) + 1
-            snippet = self._extract_brace_block(source, m.end() - 1)
-            end_line = start_line + snippet.count("\n")
-            sym = self._build_function_symbol(
-                name=name,
-                signature=f"({raw_args.strip()}) => {{...}}",
-                args=args_clean,
-                code_snippet=snippet,
-                file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
-                context=f"const {name} = ({raw_args.strip()}) => {{...}}",
-                is_constructor=False,
-                class_name=None,
-            )
-            file_entry["functions"].append(sym)
-
-        # --- Classes and methods ---
-        classes_found: List[Dict[str, Any]] = []
-        for m in TS_CLASS_RE.finditer(source):
-            cls_name = m.group("name")
-            body = m.group("body")
-            cls_start = source.count("\n", 0, m.start()) + 1
-            methods: List[Dict[str, Any]] = []
-
-            for mm in TS_METHOD_RE.finditer(body):
-                mname = mm.group("name")
-                raw_args = mm.group("args")
-                args_clean = self._strip_types_from_args(raw_args)
-                body_prefix = body[:mm.start()]
-                m_start = cls_start + body_prefix.count("\n") + 1
-                method_src = self._extract_brace_block(body, mm.end() - 1)
-                m_end = m_start + method_src.count("\n")
-                is_ctor = (mname == "constructor")
-
-                sym = self._build_function_symbol(
-                    name=mname,
-                    signature=f"({raw_args.strip()})",
-                    args=args_clean,
-                    code_snippet=method_src,
-                    file_path=file_path,
-                    start_line=m_start,
-                    end_line=m_end,
-                    context=f"class {cls_name} :: method {mname}({raw_args.strip()})",
-                    is_constructor=is_ctor,
-                    class_name=cls_name,
-                )
-                methods.append(sym)
-
-            classes_found.append({
-                "name": cls_name,
-                "description": "",
-                "methods": methods,
-                "lines": {"start": cls_start, "end": None},
-                "file_path": file_path,
-                "language_hint": "typescript",
-            })
-
-        file_entry["classes"].extend(classes_found)
-
-        # --- Interfaces (as class-like entries with signature-only methods) ---
-        for im in TS_INTERFACE_RE.finditer(source):
-            iface_name = im.group("name")
-            ibody = im.group("body")
-            iface_start = source.count("\n", 0, im.start()) + 1
-            methods: List[Dict[str, Any]] = []
-
-            for mm in TS_INTERFACE_METHOD_RE.finditer(ibody):
-                mname = mm.group("name")
-                raw_args = mm.group("args")
-                args_clean = self._strip_types_from_args(raw_args)
-                ret = (mm.group("ret") or "").strip()
-                body_prefix = ibody[:mm.start()]
-                m_start = iface_start + body_prefix.count("\n") + 1
-                # No body; use signature line as snippet for context
-                signature = f"({raw_args.strip()}) : {ret}".strip()
-                doc, details = self.generate_doc(signature, node_name=mname, context=f"interface {iface_name} :: {mname}{signature}")
-
-                params = self._merge_params_ts(args_clean, details.get("params") or [])
-                returns = details.get("returns") or {"type": ret, "desc": ""}
-
-                methods.append({
-                    "name": mname,
-                    "signature": signature,
-                    "description": (details.get("summary") or "").strip(),
-                    "parameters": params,
-                    "returns": {
-                        "type": (returns.get("type") or ret).strip(),
-                        "description": (returns.get("desc") or returns.get("description") or "").strip(),
-                    },
-                    "throws": details.get("throws") or [],
-                    "examples": details.get("examples") or [],
-                    "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
-                    "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
-                    "lines": {"start": m_start, "end": None},
-                    "file_path": file_path,
-                    "language_hint": "typescript",
+        
+        # Process all nodes in the AST
+        self._process_node(root_node, source.encode('utf8'), result)
+        
+        return result
+    
+    def _process_node(self, node, source: bytes, result: Dict):
+        """Recursively process AST nodes."""
+        node_type = node.type
+        
+        if node_type == 'import_statement':
+            self._extract_import(node, source, result)
+        elif node_type == 'export_statement':
+            self._extract_export(node, source, result)
+        elif node_type == 'class_declaration':
+            self._extract_class(node, source, result)
+        elif node_type == 'interface_declaration':
+            self._extract_interface(node, source, result)
+        elif node_type == 'function_declaration':
+            self._extract_function(node, source, result)
+        elif node_type == 'type_alias_declaration':
+            self._extract_type_alias(node, source, result)
+        elif node_type == 'enum_declaration':
+            self._extract_enum(node, source, result)
+        elif node_type == 'lexical_declaration' or node_type == 'variable_declaration':
+            self._extract_constant(node, source, result)
+        
+        # Recursively process children
+        for child in node.children:
+            self._process_node(child, source, result)
+    
+    def _get_node_text(self, node, source: bytes) -> str:
+        """Extract text from a tree-sitter node."""
+        return source[node.start_byte:node.end_byte].decode('utf8')
+    
+    def _extract_import(self, node, source: bytes, result: Dict):
+        """Extract import statement information."""
+        import_text = self._get_node_text(node, source)
+        
+        # Extract module name
+        module_match = re.search(r'from\s+[\'"]([^\'"]+)[\'"]', import_text)
+        module = module_match.group(1) if module_match else ''
+        
+        # Extract imported items
+        items = []
+        if 'import {' in import_text:
+            items_match = re.search(r'import\s*\{([^}]+)\}', import_text)
+            if items_match:
+                items = [item.strip() for item in items_match.group(1).split(',')]
+        elif 'import * as' in import_text:
+            alias_match = re.search(r'import\s+\*\s+as\s+(\w+)', import_text)
+            if alias_match:
+                items = [f"* as {alias_match.group(1)}"]
+        else:
+            default_match = re.search(r'import\s+(\w+)', import_text)
+            if default_match:
+                items = [default_match.group(1)]
+        
+        result['imports'].append({
+            'module': module,
+            'items': items,
+            'line': node.start_point[0] + 1
+        })
+        
+        if module and module not in result['dependencies']:
+            result['dependencies'].append(module)
+    
+    def _extract_export(self, node, source: bytes, result: Dict):
+        """Extract export statement information."""
+        export_text = self._get_node_text(node, source)
+        
+        # Check for different export types
+        if 'export default' in export_text:
+            name_match = re.search(r'export\s+default\s+(class|function|interface)?\s*(\w+)', export_text)
+            if name_match:
+                result['exports'].append({
+                    'name': name_match.group(2),
+                    'type': 'default',
+                    'line': node.start_point[0] + 1
                 })
-
-            file_entry["classes"].append({
-                "name": iface_name,
-                "description": "",
-                "methods": methods,
-                "lines": {"start": iface_start, "end": None},
-                "file_path": file_path,
-                "language_hint": "typescript",
+        elif 'export {' in export_text:
+            items_match = re.search(r'export\s*\{([^}]+)\}', export_text)
+            if items_match:
+                items = [item.strip() for item in items_match.group(1).split(',')]
+                for item in items:
+                    result['exports'].append({
+                        'name': item,
+                        'type': 'named',
+                        'line': node.start_point[0] + 1
+                    })
+    
+    def _extract_class(self, node, source: bytes, result: Dict):
+        """Extract class declaration information."""
+        class_name = None
+        extends = None
+        implements = []
+        methods = []
+        properties = []
+        decorators = []
+        
+        # Get class name
+        for child in node.children:
+            if child.type == 'type_identifier':
+                class_name = self._get_node_text(child, source)
+            elif child.type == 'class_heritage':
+                heritage_text = self._get_node_text(child, source)
+                extends_match = re.search(r'extends\s+(\w+)', heritage_text)
+                if extends_match:
+                    extends = extends_match.group(1)
+                implements_match = re.search(r'implements\s+([^{]+)', heritage_text)
+                if implements_match:
+                    implements = [i.strip() for i in implements_match.group(1).split(',')]
+            elif child.type == 'class_body':
+                self._extract_class_members(child, source, methods, properties)
+            elif child.type == 'decorator':
+                decorator_text = self._get_node_text(child, source)
+                decorators.append(decorator_text)
+        
+        if class_name:
+            result['classes'].append({
+                'name': class_name,
+                'extends': extends,
+                'implements': implements,
+                'methods': methods,
+                'properties': properties,
+                'decorators': decorators,
+                'line': node.start_point[0] + 1
             })
-
-        return {"files": [file_entry]}
-
-    # ------------------------ helpers ------------------------
-
-    def _strip_types_from_args(self, args: str) -> str:
-        """Return a comma list of parameter names (strip TS types/defaults/optional)."""
-        names: List[str] = []
-        for raw in [a.strip() for a in args.split(",") if a.strip()]:
-            # Remove default assignment
-            if "=" in raw:
-                raw = raw.split("=", 1)[0].strip()
-            # Remove type annotation
-            if ":" in raw:
-                raw = raw.split(":", 1)[0].strip()
-            # Remove optional marker
-            raw = raw.replace("?", "").strip()
-            # Rest parameter ( ...args )
-            raw = raw.lstrip("...")
-            names.append(raw)
-        return ", ".join(names)
-
-    def _merge_params_ts(self, arglist: str, details_params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Align cleaned arg names with details from LLM."""
-        names = [{"name": a.strip(), "default": None} for a in [x.strip() for x in arglist.split(",") if x.strip()]]
-        dmap = {p.get("name"): p for p in details_params if p.get("name")}
-        out: List[Dict[str, Any]] = []
-        for p in names:
-            dp = dmap.get(p["name"], {})
-            out.append({
-                "name": p["name"],
-                "type": (dp.get("type") or "").strip(),
-                "default": dp.get("default", p["default"]),
-                "description": (dp.get("desc") or dp.get("description") or "").strip(),
-                "optional": bool(dp.get("optional")) or False,
+    
+    def _extract_class_members(self, body_node, source: bytes, methods: List, properties: List):
+        """Extract methods and properties from a class body."""
+        for child in body_node.children:
+            if child.type == 'method_definition':
+                method_info = self._extract_method(child, source)
+                if method_info:
+                    methods.append(method_info)
+            elif child.type == 'field_definition' or child.type == 'public_field_definition':
+                property_info = self._extract_property(child, source)
+                if property_info:
+                    properties.append(property_info)
+    
+    def _extract_method(self, node, source: bytes) -> Optional[Dict]:
+        """Extract method information from a method node."""
+        method_name = None
+        params = []
+        return_type = None
+        is_static = False
+        is_async = False
+        access_modifier = 'public'
+        decorators = []
+        
+        method_text = self._get_node_text(node, source)
+        
+        # Check modifiers
+        if 'static' in method_text.split('(')[0]:
+            is_static = True
+        if 'async' in method_text.split('(')[0]:
+            is_async = True
+        if method_text.strip().startswith('private'):
+            access_modifier = 'private'
+        elif method_text.strip().startswith('protected'):
+            access_modifier = 'protected'
+        
+        for child in node.children:
+            if child.type == 'property_identifier':
+                method_name = self._get_node_text(child, source)
+            elif child.type == 'formal_parameters':
+                params = self._extract_parameters(child, source)
+            elif child.type == 'type_annotation':
+                return_type = self._get_node_text(child, source).lstrip(':').strip()
+            elif child.type == 'decorator':
+                decorator_text = self._get_node_text(child, source)
+                decorators.append(decorator_text)
+        
+        if method_name:
+            return {
+                'name': method_name,
+                'params': params,
+                'return_type': return_type,
+                'is_static': is_static,
+                'is_async': is_async,
+                'access_modifier': access_modifier,
+                'decorators': decorators,
+                'line': node.start_point[0] + 1
+            }
+        return None
+    
+    def _extract_property(self, node, source: bytes) -> Optional[Dict]:
+        """Extract property information from a property node."""
+        property_name = None
+        property_type = None
+        access_modifier = 'public'
+        is_static = False
+        is_readonly = False
+        
+        property_text = self._get_node_text(node, source)
+        
+        # Check modifiers
+        if property_text.strip().startswith('private'):
+            access_modifier = 'private'
+        elif property_text.strip().startswith('protected'):
+            access_modifier = 'protected'
+        if 'static' in property_text.split(':')[0]:
+            is_static = True
+        if 'readonly' in property_text.split(':')[0]:
+            is_readonly = True
+        
+        for child in node.children:
+            if child.type == 'property_identifier':
+                property_name = self._get_node_text(child, source)
+            elif child.type == 'type_annotation':
+                property_type = self._get_node_text(child, source).lstrip(':').strip()
+        
+        if property_name:
+            return {
+                'name': property_name,
+                'type': property_type,
+                'access_modifier': access_modifier,
+                'is_static': is_static,
+                'is_readonly': is_readonly,
+                'line': node.start_point[0] + 1
+            }
+        return None
+    
+    def _extract_interface(self, node, source: bytes, result: Dict):
+        """Extract interface declaration information."""
+        interface_name = None
+        extends = []
+        properties = []
+        methods = []
+        
+        for child in node.children:
+            if child.type == 'type_identifier':
+                interface_name = self._get_node_text(child, source)
+            elif child.type == 'extends_clause':
+                extends_text = self._get_node_text(child, source)
+                extends_match = re.findall(r'\b\w+\b', extends_text)
+                extends = [e for e in extends_match if e != 'extends']
+            elif child.type == 'object_type':
+                self._extract_interface_members(child, source, properties, methods)
+        
+        if interface_name:
+            result['interfaces'].append({
+                'name': interface_name,
+                'extends': extends,
+                'properties': properties,
+                'methods': methods,
+                'line': node.start_point[0] + 1
             })
-        return out
-
-    def _extract_brace_block(self, src: str, brace_pos: int) -> str:
-        """Return text from the first '{' at/after brace_pos until its matching '}' (best-effort)."""
-        i = src.find("{", brace_pos)
-        if i == -1:
-            return src[brace_pos: brace_pos + 400]
-        depth = 0
-        for j in range(i, len(src)):
-            c = src[j]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    return src[i:j+1]
-        return src[i:]
-
-    def _build_function_symbol(
-        self,
-        name: str,
-        signature: str,
-        args: str,
-        code_snippet: str,
-        file_path: str,
-        start_line: int,
-        end_line: int,
-        context: str,
-        is_constructor: bool,
-        class_name: Optional[str],
-    ) -> Dict[str, Any]:
-        """Build a function/method symbol dict with LLM-generated details."""
-        doc, details = self.generate_doc(code_snippet, node_name=name, context=context)
+    
+    def _extract_interface_members(self, body_node, source: bytes, properties: List, methods: List):
+        """Extract properties and methods from an interface."""
+        for child in body_node.children:
+            if child.type == 'property_signature':
+                prop_text = self._get_node_text(child, source)
+                name_match = re.match(r'(\w+)\s*:\s*(.+)', prop_text)
+                if name_match:
+                    properties.append({
+                        'name': name_match.group(1),
+                        'type': name_match.group(2).rstrip(';,').strip()
+                    })
+            elif child.type == 'method_signature':
+                method_text = self._get_node_text(child, source)
+                name_match = re.match(r'(\w+)\s*\(([^)]*)\)\s*:\s*(.+)', method_text)
+                if name_match:
+                    params_str = name_match.group(2)
+                    params = []
+                    if params_str.strip():
+                        for param in params_str.split(','):
+                            param = param.strip()
+                            param_match = re.match(r'(\w+)\s*:\s*(.+)', param)
+                            if param_match:
+                                params.append({
+                                    'name': param_match.group(1),
+                                    'type': param_match.group(2)
+                                })
+                    
+                    methods.append({
+                        'name': name_match.group(1),
+                        'params': params,
+                        'return_type': name_match.group(3).rstrip(';,').strip()
+                    })
+    
+    def _extract_function(self, node, source: bytes, result: Dict):
+        """Extract function declaration information."""
+        function_name = None
+        params = []
+        return_type = None
+        is_async = False
+        is_exported = False
         
-        # Get summary
-        summary = (details.get("summary") or "").strip()
+        function_text = self._get_node_text(node, source)
         
-        # Handle constructor special case
-        if is_constructor and class_name:
-            if not summary or class_name not in summary:
-                summary = f"Constructs a {class_name} instance."
+        if 'async' in function_text.split('(')[0]:
+            is_async = True
+        if function_text.strip().startswith('export'):
+            is_exported = True
         
-        # Merge parameters
-        params = self._merge_params_ts(args, details.get("params") or [])
+        for child in node.children:
+            if child.type == 'identifier':
+                function_name = self._get_node_text(child, source)
+            elif child.type == 'formal_parameters':
+                params = self._extract_parameters(child, source)
+            elif child.type == 'type_annotation':
+                return_type = self._get_node_text(child, source).lstrip(':').strip()
         
-        # Get returns
-        dret = details.get("returns") or {}
-        returns = {
-            "type": (dret.get("type") or "").strip(),
-            "description": (dret.get("desc") or dret.get("description") or "").strip(),
+        if function_name:
+            result['functions'].append({
+                'name': function_name,
+                'params': params,
+                'return_type': return_type,
+                'is_async': is_async,
+                'is_exported': is_exported,
+                'line': node.start_point[0] + 1
+            })
+    
+    def _extract_parameters(self, node, source: bytes) -> List[Dict]:
+        """Extract function/method parameters."""
+        params = []
+        
+        for child in node.children:
+            if child.type == 'required_parameter' or child.type == 'optional_parameter':
+                param_text = self._get_node_text(child, source)
+                param_match = re.match(r'(\w+)\??\s*:\s*(.+?)(?:\s*=.+)?$', param_text)
+                if param_match:
+                    params.append({
+                        'name': param_match.group(1),
+                        'type': param_match.group(2),
+                        'optional': '?' in param_text
+                    })
+                else:
+                    # Handle parameter without type annotation
+                    name_match = re.match(r'(\w+)', param_text)
+                    if name_match:
+                        params.append({
+                            'name': name_match.group(1),
+                            'type': 'any',
+                            'optional': False
+                        })
+        
+        return params
+    
+    def _extract_type_alias(self, node, source: bytes, result: Dict):
+        """Extract type alias declaration information."""
+        type_name = None
+        type_definition = None
+        
+        for child in node.children:
+            if child.type == 'type_identifier':
+                type_name = self._get_node_text(child, source)
+            elif child.type in ['union_type', 'intersection_type', 'object_type', 'type_identifier']:
+                type_definition = self._get_node_text(child, source)
+        
+        if type_name and type_definition:
+            result['type_aliases'].append({
+                'name': type_name,
+                'definition': type_definition,
+                'line': node.start_point[0] + 1
+            })
+    
+    def _extract_enum(self, node, source: bytes, result: Dict):
+        """Extract enum declaration information."""
+        enum_name = None
+        members = []
+        
+        for child in node.children:
+            if child.type == 'identifier':
+                enum_name = self._get_node_text(child, source)
+            elif child.type == 'enum_body':
+                for member in child.children:
+                    if member.type == 'property_identifier':
+                        member_text = self._get_node_text(member, source)
+                        members.append(member_text)
+        
+        if enum_name:
+            result['enums'].append({
+                'name': enum_name,
+                'members': members,
+                'line': node.start_point[0] + 1
+            })
+    
+    def _extract_constant(self, node, source: bytes, result: Dict):
+        """Extract constant/variable declarations."""
+        declaration_text = self._get_node_text(node, source)
+        
+        # Only capture const declarations at module level
+        if declaration_text.strip().startswith('const'):
+            const_match = re.search(r'const\s+(\w+)\s*:\s*([^=]+)?\s*=', declaration_text)
+            if const_match:
+                result['constants'].append({
+                    'name': const_match.group(1),
+                    'type': const_match.group(2).strip() if const_match.group(2) else None,
+                    'line': node.start_point[0] + 1
+                })
+    
+    def _analyze_with_regex(self, source: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Fallback analysis using regex patterns."""
+        result = {
+            'imports': [],
+            'exports': [],
+            'classes': [],
+            'interfaces': [],
+            'functions': [],
+            'type_aliases': [],
+            'enums': [],
+            'constants': [],
+            'dependencies': []
         }
         
-        return {
-            "name": name,
-            "signature": signature,
-            "description": summary,
-            "parameters": params,
-            "returns": returns,
-            "throws": details.get("throws") or [],
-            "examples": details.get("examples") or [],
-            "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
-            "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
-            "lines": {"start": start_line, "end": end_line},
-            "file_path": file_path,
-            "language_hint": "typescript",
-        }
+        lines = source.split('\n')
+        
+        for i, line in enumerate(lines, 1):
+            line = line.strip()
+            
+            # Extract imports
+            if line.startswith('import '):
+                import_match = re.match(r'import\s+(?:\{([^}]+)\}|(\w+)|\*\s+as\s+(\w+))\s+from\s+[\'"]([^\'"]+)[\'"]', line)
+                if import_match:
+                    items = []
+                    if import_match.group(1):  # Named imports
+                        items = [item.strip() for item in import_match.group(1).split(',')]
+                    elif import_match.group(2):  # Default import
+                        items = [import_match.group(2)]
+                    elif import_match.group(3):  # Namespace import
+                        items = [f"* as {import_match.group(3)}"]
+                    
+                    module = import_match.group(4)
+                    result['imports'].append({
+                        'module': module,
+                        'items': items,
+                        'line': i
+                    })
+                    
+                    if module and module not in result['dependencies']:
+                        result['dependencies'].append(module)
+            
+            # Extract exports
+            elif line.startswith('export '):
+                if 'export default' in line:
+                    default_match = re.search(r'export\s+default\s+(?:class|function|interface)?\s*(\w+)', line)
+                    if default_match:
+                        result['exports'].append({
+                            'name': default_match.group(1),
+                            'type': 'default',
+                            'line': i
+                        })
+                elif 'export {' in line:
+                    exports_match = re.search(r'export\s*\{([^}]+)\}', line)
+                    if exports_match:
+                        items = [item.strip() for item in exports_match.group(1).split(',')]
+                        for item in items:
+                            result['exports'].append({
+                                'name': item,
+                                'type': 'named',
+                                'line': i
+                            })
+            
+            # Extract classes
+            elif 'class ' in line:
+                class_match = re.match(r'(?:export\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([^{]+))?', line)
+                if class_match:
+                    implements = []
+                    if class_match.group(3):
+                        implements = [impl.strip() for impl in class_match.group(3).split(',')]
+                    
+                    result['classes'].append({
+                        'name': class_match.group(1),
+                        'extends': class_match.group(2),
+                        'implements': implements,
+                        'methods': [],
+                        'properties': [],
+                        'decorators': [],
+                        'line': i
+                    })
+            
+            # Extract interfaces
+            elif 'interface ' in line:
+                interface_match = re.match(r'(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([^{]+))?', line)
+                if interface_match:
+                    extends = []
+                    if interface_match.group(2):
+                        extends = [ext.strip() for ext in interface_match.group(2).split(',')]
+                    
+                    result['interfaces'].append({
+                        'name': interface_match.group(1),
+                        'extends': extends,
+                        'properties': [],
+                        'methods': [],
+                        'line': i
+                    })
+            
+            # Extract functions
+            elif 'function ' in line:
+                function_match = re.match(r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?', line)
+                if function_match:
+                    params_str = function_match.group(2)
+                    params = []
+                    if params_str.strip():
+                        for param in params_str.split(','):
+                            param = param.strip()
+                            param_match = re.match(r'(\w+)(?:\?)?(?:\s*:\s*([^=]+))?', param)
+                            if param_match:
+                                params.append({
+                                    'name': param_match.group(1),
+                                    'type': param_match.group(2).strip() if param_match.group(2) else 'any',
+                                    'optional': '?' in param
+                                })
+                    
+                    result['functions'].append({
+                        'name': function_match.group(1),
+                        'params': params,
+                        'return_type': function_match.group(3).strip() if function_match.group(3) else None,
+                        'is_async': 'async' in line,
+                        'is_exported': line.strip().startswith('export'),
+                        'line': i
+                    })
+            
+            # Extract type aliases
+            elif 'type ' in line and '=' in line:
+                type_match = re.match(r'(?:export\s+)?type\s+(\w+)\s*=\s*(.+)', line)
+                if type_match:
+                    result['type_aliases'].append({
+                        'name': type_match.group(1),
+                        'definition': type_match.group(2).rstrip(';').strip(),
+                        'line': i
+                    })
+            
+            # Extract enums
+            elif 'enum ' in line:
+                enum_match = re.match(r'(?:export\s+)?enum\s+(\w+)', line)
+                if enum_match:
+                    result['enums'].append({
+                        'name': enum_match.group(1),
+                        'members': [],
+                        'line': i
+                    })
+            
+            # Extract constants
+            elif line.startswith('const '):
+                const_match = re.match(r'const\s+(\w+)\s*:\s*([^=]+)?\s*=', line)
+                if const_match:
+                    result['constants'].append({
+                        'name': const_match.group(1),
+                        'type': const_match.group(2).strip() if const_match.group(2) else None,
+                        'line': i
+                    })
+        
+        return result
