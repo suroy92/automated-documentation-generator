@@ -31,6 +31,7 @@ from .technical_doc_generator import MarkdownGenerator, HTMLGenerator, Generator
 from .ladom_schema import LADOMValidator
 from .providers.ollama_client import LLM, LLMConfig
 from .business_doc_generator import BusinessDocGenerator
+from .readme_generator import ReadmeGenerator
 
 # Load environment variables (optional)
 load_dotenv()
@@ -55,16 +56,20 @@ def initialize_llm_client(config: ConfigLoader) -> LLM:
         llm_cfg = getattr(config, "config", {}).get("llm", {}) if hasattr(config, "config") else {}
     except Exception:
         llm_cfg = {}
+    
+    # Support both 'timeout' and 'timeout_seconds' keys
+    timeout = llm_cfg.get("timeout") or llm_cfg.get("timeout_seconds", 300)
+    
     client = LLM(
         LLMConfig(
             base_url=llm_cfg.get("base_url", "http://localhost:11434"),
             model=llm_cfg.get("model", "qwen2.5-coder:7b"),
             temperature=float(llm_cfg.get("temperature", 0.2) or 0.2),
             embedding_model=llm_cfg.get("embedding_model", "all-minilm:l6-v2"),
-            timeout_seconds=int(llm_cfg.get("timeout_seconds", 120) or 120),
+            timeout_seconds=int(timeout),
         )
     )
-    logger.info("Ollama LLM client initialized (local)")
+    logger.info(f"Ollama LLM client initialized (model: {client.model}, timeout: {client.timeout}s)")
     return client
 
 
@@ -157,11 +162,17 @@ def _menu_choice() -> str:
     print("  1) Technical")
     print("  2) Business")
     print("  3) Both  [default]")
-    choice = input("Enter choice [1/2/3]: ").strip()
+    print("  4) README (Comprehensive)")
+    print("  5) All (Technical + Business + README)")
+    choice = input("Enter choice [1/2/3/4/5]: ").strip()
     if choice == "1":
         return "technical"
     if choice == "2":
         return "business"
+    if choice == "4":
+        return "readme"
+    if choice == "5":
+        return "all"
     return "both"  # default
 
 
@@ -186,6 +197,26 @@ def _generate_business_docs(aggregated_ladom, output_dir: str, llm_client: LLM) 
     HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
     logger.info(f"✓ Business Markdown:  {md_path}")
     logger.info(f"✓ Business HTML:      {html_path}")
+    return md_path, html_path
+
+
+def _generate_readme_docs(aggregated_ladom, output_dir: str, project_path: str, llm_client: LLM) -> Tuple[str, str]:
+    """Generate comprehensive README documentation."""
+    md_path = os.path.join(output_dir, "README.md")
+    html_path = os.path.join(output_dir, "README.html")
+    
+    readme_gen = ReadmeGenerator(llm_client)
+    readme_gen.generate(aggregated_ladom, project_path, md_path)
+    
+    # Generate HTML version
+    try:
+        readme_gen.generate_html(md_path, html_path)
+        logger.info(f"✓ README HTML:        {html_path}")
+    except Exception as e:
+        logger.warning(f"Could not generate HTML README: {e}")
+        html_path = ""
+    
+    logger.info(f"✓ README Markdown:    {md_path}")
     return md_path, html_path
 
 
@@ -245,11 +276,14 @@ def main():
     doc_choice = _menu_choice()
 
     print("\nGenerating documentation...")
-    if doc_choice in ("technical", "both"):
+    if doc_choice in ("technical", "both", "all"):
         _generate_technical_docs(aggregated_ladom, out)
 
-    if doc_choice in ("business", "both"):
+    if doc_choice in ("business", "both", "all"):
         _generate_business_docs(aggregated_ladom, out, llm_client)
+    
+    if doc_choice in ("readme", "all"):
+        _generate_readme_docs(aggregated_ladom, out, project_path, llm_client)
 
     print("\n" + "=" * 60)
     print("  ✓ Documentation generated successfully!")

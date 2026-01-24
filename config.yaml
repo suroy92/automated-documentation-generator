@@ -25,14 +25,34 @@ output:
   directory: Documentation
   format: markdown
   include_toc: true
+
+# README Generation Configuration
+readme:
+  enabled: true
+  generate_diagrams: true  # Generate Mermaid diagrams
+  generate_examples: true  # Extract and include code examples
+  max_diagram_nodes: 15  # Maximum nodes in dependency diagrams
+  max_code_examples: 5  # Maximum code examples to extract
+  include_statistics: true  # Include project statistics
+  include_architecture: true  # Include architecture analysis
+  include_setup_guide: true  # Include installation/setup instructions
+  include_usage_examples: true  # Include usage examples
   
 # LLM Configuration
 llm:
   provider: ollama
-  model: qwen2.5-coder:7b
+  model: qwen2.5-coder:14b
   base_url: http://localhost:11434
   temperature: 0.2
-  rate_limit_calls_per_minute: 20
+  timeout: 400  # Increased to 6.6 minutes for 14B model (was 180s)
+  max_retries: 5
+  retry_delay: 10  # Increased from 5s to 10s between retries
+  rate_limit_calls_per_minute: 12  # Reduced to give more time per call
+  options:
+    num_gpu: 35  # Use most layers on GPU
+    num_thread: 6  # Match your CPU cores
+    num_ctx: 4096  # Context window
+    num_predict: 2048  # Limit output tokens to prevent long hangs
   
 # Cache configuration
 cache:
@@ -47,8 +67,8 @@ logging:
   
 # Processing configuration
 processing:
-  parallel: true
-  max_workers: 6
+  parallel: false  # TEMPORARILY DISABLED - reduce memory pressure
+  max_workers: 2  # Reduced from 6 when re-enabling parallel
   
 # Security configuration
 security:

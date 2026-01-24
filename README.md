@@ -18,7 +18,8 @@ A robust, language-agnostic CLI that scans a project and generates documentation
 
 **New (Business-Friendly Docs + Menu):**
 - 🗺️ **Business documentation**: Executive Summary, Capabilities, User Journeys, Inputs/Outputs, Operations, Security & Privacy, Risks, Glossary, Roadmap — synthesized from LADOM via the local LLM.
-- 🧭 **Interactive menu**: choose *Technical*, *Business*, or **Both (default)** every run.
+- 📄 **Comprehensive README generation**: Creates in-depth, professional README files with architecture diagrams, usage examples, setup guides, and more (see [README_GENERATION_GUIDE.md](README_GENERATION_GUIDE.md))
+- 🧭 **Interactive menu**: choose *Technical*, *Business*, *README (Comprehensive)*, or **All** every run.
 
 ---
 
