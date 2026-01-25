@@ -4,6 +4,10 @@ pyyaml>=6.0
 esprima>=4.0.1
 javalang>=0.13.0
 
+# AST parsers for enhanced analysis
+tree-sitter>=0.20.0
+tree-sitter-typescript>=0.20.0
+
 # Progress and UI
 tqdm>=4.65.0
 

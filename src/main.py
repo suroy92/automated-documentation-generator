@@ -15,7 +15,7 @@ import os
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Tuple
+from typing import Tuple, Dict, Any
 from dotenv import load_dotenv
 from tqdm import tqdm
 
@@ -27,10 +27,9 @@ from .analyzers.py_analyzer import PythonAnalyzer
 from .analyzers.js_analyzer import JavaScriptAnalyzer
 from .analyzers.ts_analyzer import TypeScriptAnalyzer
 from .analyzers.java_analyzer import JavaAnalyzer
-from .technical_doc_generator import MarkdownGenerator, HTMLGenerator, GeneratorConfig
 from .ladom_schema import LADOMValidator
 from .providers.ollama_client import LLM, LLMConfig
-from .business_doc_generator import BusinessDocGenerator
+from .readme_generator import ReadmeGenerator
 
 # Load environment variables (optional)
 load_dotenv()
@@ -55,16 +54,20 @@ def initialize_llm_client(config: ConfigLoader) -> LLM:
         llm_cfg = getattr(config, "config", {}).get("llm", {}) if hasattr(config, "config") else {}
     except Exception:
         llm_cfg = {}
+    
+    # Support both 'timeout' and 'timeout_seconds' keys
+    timeout = llm_cfg.get("timeout") or llm_cfg.get("timeout_seconds", 300)
+    
     client = LLM(
         LLMConfig(
             base_url=llm_cfg.get("base_url", "http://localhost:11434"),
             model=llm_cfg.get("model", "qwen2.5-coder:7b"),
             temperature=float(llm_cfg.get("temperature", 0.2) or 0.2),
             embedding_model=llm_cfg.get("embedding_model", "all-minilm:l6-v2"),
-            timeout_seconds=int(llm_cfg.get("timeout_seconds", 120) or 120),
+            timeout_seconds=int(timeout),
         )
     )
-    logger.info("Ollama LLM client initialized (local)")
+    logger.info(f"Ollama LLM client initialized (model: {client.model}, timeout: {client.timeout}s)")
     return client
 
 
@@ -86,10 +89,29 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
     exclude_dirs = config.get_exclude_dirs()
     files_to_analyze = []
 
+    # Patterns for files to exclude (test files, config files, etc.)
+    exclude_file_patterns = [
+        '.spec.ts', '.spec.js', '.test.ts', '.test.js',  # Test files
+        '.spec.tsx', '.test.tsx',  # React test files
+        'test.ts', 'test.js',  # Generic test files
+        'karma.conf.js', 'jest.config.js', 'webpack.config.js',  # Config files
+        'polyfills.ts', 'polyfills.js',  # Polyfills
+        '.d.ts',  # TypeScript declaration files
+    ]
+
+    def should_exclude_file(filename: str) -> bool:
+        """Check if file should be excluded based on patterns."""
+        filename_lower = filename.lower()
+        return any(pattern in filename_lower for pattern in exclude_file_patterns)
+
     logger.info("Scanning project directory...")
     for root, dirs, files in os.walk(project_path):
         dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for file in files:
+            # Skip excluded files
+            if should_exclude_file(file):
+                continue
+                
             file_path = os.path.join(root, file)
             if file.endswith(".py"):
                 files_to_analyze.append((file_path, py_analyzer, "Python"))
@@ -133,54 +155,41 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
     return aggregated_ladom
 
 
-def _menu_choice() -> str:
-    print("\nChoose documentation type:")
-    print("  1) Technical")
-    print("  2) Business")
-    print("  3) Both  [default]")
-    choice = input("Enter choice [1/2/3]: ").strip()
-    if choice == "1":
-        return "technical"
-    if choice == "2":
-        return "business"
-    return "both"  # default
-
-
-def _generate_technical_docs(aggregated_ladom, output_dir: str) -> Tuple[str, str]:
-    md_path = os.path.join(output_dir, "documentation.technical.md")
-    html_path = os.path.join(output_dir, "documentation.technical.html")
-    gen_config = GeneratorConfig()
-    md = MarkdownGenerator(gen_config)
-    md.generate(aggregated_ladom, md_path)
-    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
-    logger.info(f"✓ Technical Markdown: {md_path}")
-    logger.info(f"✓ Technical HTML:     {html_path}")
-    return md_path, html_path
-
-
-def _generate_business_docs(aggregated_ladom, output_dir: str, llm_client: LLM) -> Tuple[str, str]:
-    md_path = os.path.join(output_dir, "documentation.business.md")
-    html_path = os.path.join(output_dir, "documentation.business.html")
-    gen_config = GeneratorConfig()
-    biz = BusinessDocGenerator(llm_client)
-    biz.generate(aggregated_ladom, md_path)
-    HTMLGenerator(gen_config).generate(aggregated_ladom, html_path)
-    logger.info(f"✓ Business Markdown:  {md_path}")
-    logger.info(f"✓ Business HTML:      {html_path}")
-    return md_path, html_path
+def generate_readme(aggregated_ladom: Dict[str, Any], output_dir: str, project_path: str, llm_client: LLM) -> str:
+    """
+    Generate comprehensive README documentation.
+    
+    Args:
+        aggregated_ladom: Aggregated LADOM data
+        output_dir: Output directory
+        project_path: Source project path
+        llm_client: LLM client
+        
+    Returns:
+        Path to generated README
+    """
+    readme_path = os.path.join(output_dir, "README.md")
+    
+    logger.info("Generating comprehensive README documentation...")
+    readme_gen = ReadmeGenerator(llm_client)
+    readme_gen.generate(aggregated_ladom, project_path, readme_path)
+    
+    logger.info(f"✓ README generated: {readme_path}")
+    return readme_path
 
 
 def main():
-    print("=" * 60)
-    print("  Automated Documentation Generator (Local – Ollama / Week 1)")
-    print("=" * 60)
+    print("=" * 70)
+    print("  Automated Documentation Generator")
+    print("  Comprehensive README Generator for Any Project")
+    print("=" * 70)
     print()
 
     config = ConfigLoader()
     setup_logging(config)
     logger.info("Starting documentation generator")
 
-    project_path = input("Enter the project path to scan: ").strip()
+    project_path = input("Enter the project path to analyze: ").strip()
     if not project_path:
         logger.error("No project path provided")
         print("Error: Project path is required")
@@ -206,14 +215,14 @@ def main():
     ts_analyzer = TypeScriptAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
     java_analyzer = JavaAnalyzer(client=llm_client, cache=cache, rate_limiter=rate_limiter)
 
-    print("\nScanning project:", project_path)
+    print("\nScanning and analyzing project:", project_path)
     aggregated_ladom = scan_and_analyze(project_path, config, py_analyzer, js_analyzer, java_analyzer, ts_analyzer)
     if not aggregated_ladom or not aggregated_ladom.get("files"):
         logger.error("No files were successfully analyzed")
         print("\nError: No supported files found or analysis failed")
         return
 
-    # Output dir
+    # Output directory
     output_dir = config.get_output_dir()
     from .path_validator import PathValidator as PV
     pval = PV()
@@ -222,29 +231,28 @@ def main():
     os.makedirs(out, exist_ok=True)
     logger.info(f"Output directory: {out}")
 
-    # Menu
-    doc_choice = _menu_choice()
+    # Generate comprehensive README
+    print("\nGenerating comprehensive README documentation...")
+    print("This may take a few minutes depending on project size...")
+    
+    readme_path = generate_readme(aggregated_ladom, out, project_path, llm_client)
 
-    print("\nGenerating documentation...")
-    if doc_choice in ("technical", "both"):
-        _generate_technical_docs(aggregated_ladom, out)
-
-    if doc_choice in ("business", "both"):
-        _generate_business_docs(aggregated_ladom, out, llm_client)
-
-    print("\n" + "=" * 60)
-    print("  ✓ Documentation generated successfully!")
-    print("=" * 60)
-
-    # Cache / rate stats
+    print("\n" + "=" * 70)
+    print("  ✓ Documentation Generated Successfully!")
+    print("=" * 70)
+    print(f"\n  📄 README: {readme_path}")
+    
+    # Statistics
     stats = cache.get_stats()
     if stats["enabled"]:
-        print(f"\nCache statistics:")
-        print(f"  - Total entries: {stats['total_entries']}")
-        print(f"  - Cache file: {stats['cache_file']}")
+        print(f"\n  Cache Statistics:")
+        print(f"    - Total entries: {stats['total_entries']}")
+        print(f"    - Cache file: {stats['cache_file']}")
 
     rate_stats = rate_limiter.get_stats()
-    print(f"\nLocal LLM calls made: {rate_stats['total_calls']}")
+    print(f"\n  LLM calls made: {rate_stats['total_calls']}")
+    
+    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":
