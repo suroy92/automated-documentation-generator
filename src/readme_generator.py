@@ -24,7 +24,6 @@ from .providers.ollama_client import LLM
 from .project_analyzer import ProjectAnalyzer
 from .utils.diagram_generator import DiagramGenerator
 from .utils.example_extractor import ExampleExtractor
-from .utils.html_renderer import HTMLRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -131,39 +130,45 @@ class ReadmeGenerator:
         testing = project_context.get("testing_structure", {})
         config_files = project_context.get("configuration_files", [])
         
-        prompt = f"""You are a senior technical writer creating a comprehensive, production-quality README.md for a software project.
+        # Determine project size for appropriate detail level
+        total_files = statistics.get('total_files', 0)
+        is_small_project = total_files < 20
+        has_tests = testing.get('test_count', 0) > 0
+        
+        prompt = f"""You are a senior technical writer creating README documentation for DEVELOPERS who need to understand and work with this codebase.
 
-# PROJECT INFORMATION
+# PROJECT ANALYSIS DATA
 
 **Project Name:** {project_name}
 
-**Architecture:** {architecture.get('primary_pattern', 'Custom')} - {architecture.get('description', '')}
+**Architecture:** {architecture.get('primary_pattern', 'Custom')}
+{architecture.get('description', '')}
 
 **Technology Stack:**
 - Languages: {', '.join(tech_stack.get('languages', ['Unknown']))}
-- Frameworks: {', '.join(tech_stack.get('frameworks', [])) or 'None detected'}
+- Frameworks: {', '.join(tech_stack.get('frameworks', [])) if tech_stack.get('frameworks') else 'None detected'}
 
 **Project Statistics:**
 - Total Files: {statistics.get('total_files', 0)}
 - Functions: {statistics.get('total_functions', 0)}
 - Classes: {statistics.get('total_classes', 0)}
-- Estimated Lines of Code: {statistics.get('estimated_lines', 0)}
+- Lines of Code: ~{statistics.get('estimated_lines', 0)}
 
-**Key Features Detected:**
-{self._format_list(key_features) or '- To be determined from code analysis'}
+**Key Features:**
+{self._format_list(key_features) if key_features else '- Features to be derived from code analysis'}
 
 **Entry Points:**
 {self._format_entry_points(entry_points)}
 
-**External Dependencies:**
-{self._format_list(dependencies.get('external_packages', [])[:10]) or '- No external dependencies detected'}
+**Dependencies:**
+{self._format_list(dependencies.get('external_packages', [])[:15]) if dependencies.get('external_packages') else '- No external dependencies'}
 
-**Configuration Files:**
-{self._format_config_files(config_files)}
+**Configuration:**
+{self._format_config_files(config_files) if config_files else '- No configuration files detected'}
 
 **Testing:**
-- Framework: {', '.join(testing.get('frameworks', ['None detected']))}
-- Test Files: {testing.get('test_count', 0)}
+{f"- Framework: {', '.join(testing.get('frameworks', []))}" if testing.get('frameworks') else "- No test framework detected"}
+{f"- Test Files: {testing.get('test_count', 0)}" if has_tests else ""}
 
 # DETAILED CODE ANALYSIS
 
@@ -171,145 +176,135 @@ class ReadmeGenerator:
 
 # YOUR TASK
 
-Generate a comprehensive, well-structured README.md that includes ALL of the following sections:
+Generate a developer-focused README.md that is:
+1. **Accurate** - Based only on actual code analysis (no placeholders, no fake data)
+2. **Specific** - Uses real file paths, function names, and examples from the code
+3. **Concise** - {'Brief and focused for small projects' if is_small_project else 'Comprehensive for larger projects'}
+4. **Actionable** - Helps developers get started and find their way around
 
-## 1. PROJECT HEADER
-- Project title with badges (build status, version, license - use generic placeholders)
-- One-line description (catchy and informative)
-- Table of contents (linked)
+# REQUIRED SECTIONS (adapt depth based on project size)
 
-## 2. OVERVIEW
-- What is this project? (2-3 paragraphs)
-- What problem does it solve?
-- Who should use it?
-- Key highlights and unique selling points
+## 1. Project Header
+- **Title**: Use actual project name: {project_name}
+- **Description**: One clear sentence about what this project does (derived from analysis)
+- **DO NOT** include GitHub badges, clone URLs, or usernames unless you can extract them from git config
+- **DO NOT** use placeholder text like "yourusername/your-repo"
 
-## 3. FEATURES
-- Detailed list of features (based on code analysis)
-- What makes this project special
-- Capabilities and functionality
+## 2. What Is This?
+- Explain the purpose in 2-3 sentences
+- List 3-5 key capabilities based on detected features
+- Identify the target audience/use case
 
-## 4. ARCHITECTURE
-- High-level architecture explanation
-- Design principles and patterns used
-- Component relationships
-- (Note: Diagrams will be inserted automatically)
+## 3. Architecture
+- State the architecture pattern: {architecture.get('primary_pattern', 'Custom')}
+- **IMPORTANT**: If this is an API-only backend, DO NOT claim it has a "View" layer or MVC
+- Explain component organization (use relative paths like `src/auth/`, not absolute Windows paths)
+- Include [Architecture Diagram] placeholder
 
-## 5. DIRECTORY STRUCTURE
-- Explain the project organization
-- Purpose of each major directory
-- Key files and their roles
+## 4. Project Structure
+- Show folder tree (use relative paths only)
+- Explain what each major directory contains
+- Highlight entry points: {', '.join([ep.get('file', ep.get('description', str(ep))) for ep in entry_points[:3]]) if entry_points else 'main files'}
+- Include [Folder Structure] placeholder
 
-## 6. GETTING STARTED
+## 5. Key Components
+- Document 5-8 most important files/modules
+- For each: purpose, main exports, when to modify
+- Use actual filenames and function signatures from analysis
+- Show dependency relationships
+
+## 6. Getting Started
 
 ### Prerequisites
-- System requirements
-- Required software and versions
-- Dependencies
+- **Extract from actual build files**: {'requirements.txt for Python' if 'python' in str(tech_stack.get('languages', [])).lower() else 'package.json for Node' if 'javascript' in str(tech_stack.get('languages', [])).lower() or 'typescript' in str(tech_stack.get('languages', [])).lower() else 'pom.xml or build.gradle for Java'}
+- List runtime/language versions found in config files
+- **DO NOT** hardcode version numbers (e.g., "JDK 11 or later")
 
 ### Installation
-- Step-by-step installation instructions
-- For different operating systems if relevant
-- Virtual environment setup for Python projects
+- **Use actual dependency files detected**: {', '.join([cf.get('file', '') for cf in config_files[:3]]) if config_files else 'no dependency file detected'}
+- Provide correct install commands based on detected package managers
+- **DO NOT** reference files that don't exist (no requirements.txt if Python project has none)
 
-### Configuration
-- How to configure the application
-- Environment variables
-- Configuration file examples
+### Running
+- Base commands on detected entry points
+- Use actual script names from package.json or build files
+- Show real examples, not generic placeholders
 
-## 7. USAGE
+## 7. API / Usage Examples (if applicable)
+- **ONLY include this section if project has API endpoints, CLI commands, or public functions**
+- For REST APIs:
+  - Format endpoints consistently: `GET /api/items` (with leading slash and proper base path)
+  - For curl examples: `curl http://localhost:PORT/api/items` (ensure proper URL with slashes)
+  - For path parameters: `/api/items/:id` (Node.js) or `/api/items/{id}` (Spring)
+- For CLI tools: show actual commands from code
+- For libraries: show import and usage examples
+- **Validate URLs**: Ensure no malformed URLs like `localhost:3000items` (missing slash)
+- **Match detected routes**: If routes are at `/api/...`, don't document as `/items`
+- **Don't describe repos as "database operations"** if storage is in-memory (check implementation)
 
-### Basic Usage
-- How to run the application
-- Command-line arguments
-- Common use cases with examples
+{'## 8. Testing' if has_tests else ''}
+{'- Show how to run detected test framework: ' + ', '.join(testing.get('frameworks', [])) if has_tests else ''}
+{'- List test commands from package.json or build files' if has_tests else ''}
+{'- **DO NOT** mention coverage requirements if no coverage tools detected' if has_tests else ''}
 
-### Advanced Usage
-- Advanced features
-- Configuration options
-- Integration with other tools
+## {'9' if has_tests else '8'}. Development
+- Explain how to set up development environment
+- **Base on actual project structure**, not generic advice
+- **DO NOT** include generic performance tips ("avoid unnecessary DB queries") unless relevant
+- **DO NOT** include SLA/response-time claims without metrics
 
-### API Documentation (if applicable)
-- Key endpoints/functions
-- Parameters and return values
-- Example requests/responses
+## {'10' if has_tests else '9'}. Contributing
+- Code organization principles
+- Where to add new features (based on actual structure)
+- **DO NOT** include instructional placeholders like "Include real code examples for..."
 
-## 8. DEVELOPMENT
+## {'11' if has_tests else '10'}. Architecture Decisions (if complex project)
+- **ONLY include if project has notable design choices**
+- Explain why certain patterns/libraries were chosen (if evident from code)
 
-### Setup Development Environment
-- Setting up for development
-- Installing dev dependencies
-- Development tools
+## {'12' if has_tests else '11'}. Dependencies
+- List actual external packages from analysis
+- **DO NOT** invent dependencies
 
-### Project Structure (Detailed)
-- Detailed explanation of code organization
-- Module purposes and responsibilities
-- How components interact
+## {'13' if has_tests else '12'}. License
+- **ONLY include if LICENSE file was detected**
 
-### Adding New Features
-- Guidelines for extending the project
-- Where to add new code
-- Best practices
+# CRITICAL RULES
 
-### Code Style
-- Coding conventions used
-- Style guides followed
+**DO NOT:**
+- Use placeholder text: "yourusername", "your-repo", "Project title with badges"
+- Include fake GitHub metadata (badges, clone URLs with placeholders)
+- Use absolute machine paths (D:\\Workspace\\...) - always use relative paths (src/auth/)
+- Claim architecture patterns that don't apply (no MVC "View" for API-only backends)
+- Insert "[Sequence Diagram]" or "[Placeholder]" sections you can't generate
+- Duplicate sections (no "How to get help" twice)
+- Include generic advice irrelevant to this project
+- Reference build files that don't exist
+- Hardcode prerequisites - derive from build config
+- Include instructional text meant for you ("List specific problems...")
+- Make up route examples - use actual detected routes with correct paths
+- Include testing/coverage requirements when no tests exist
+- Be overly verbose for small projects (<20 files)
+- Create malformed URLs like `http://localhost:3000items` - always ensure proper slashes
+- Use inconsistent path formatting like `srcindex.js` - use `src/index.js`
 
-## 9. TESTING
-- How to run tests
-- Test structure
-- Writing new tests
-- Test coverage
+**DO:**
+- Base everything on actual code analysis data provided
+- Use consistent heading capitalization (Title Case, not ALL CAPS)
+- Derive install commands from detected package managers
+- Show actual code examples extracted from the project
+- Use relative repository paths everywhere (e.g., `src/controllers/items.js`)
+- Omit sections when data is unavailable (no Testing section if no tests)
+- Keep it concise for small projects
+- Ensure accuracy over completeness
+- Validate all URLs have proper structure: `http://host:port/path` (with slashes)
+- Use consistent path separators in file paths throughout
 
-## 10. DEPLOYMENT
-- How to build for production
-- Deployment strategies
-- Environment considerations
+# CODE DETAILS FOR ACCURACY
 
-## 11. TROUBLESHOOTING
-- Common issues and solutions
-- Debugging tips
-- Where to get help
+{self._format_detailed_components(ladom_data, project_context)}
 
-## 12. CONTRIBUTING
-- How to contribute
-- Submission guidelines
-- Code review process
-
-## 13. LICENSE
-- License type (mention if found, otherwise suggest common ones)
-
-## 14. ACKNOWLEDGMENTS
-- Credits and references (if applicable)
-
-## 15. CONTACT & SUPPORT
-- How to get help
-- Where to report issues
-
----
-
-# GUIDELINES FOR GENERATION
-
-1. **Be Specific**: Use actual details from the code analysis, not generic placeholders
-2. **Be Professional**: Write clear, concise, professional documentation
-3. **Be Complete**: Cover all sections thoroughly
-4. **Be Practical**: Include real examples and actionable instructions
-5. **Use Markdown**: Proper markdown formatting with headers, lists, code blocks
-6. **Add Code Examples**: Include code snippets where relevant (use triple backticks with language)
-7. **Be Accurate**: Base everything on the actual code analysis provided
-8. **Be Helpful**: Think from a new user's perspective - what do they need to know?
-
-# IMPORTANT NOTES
-
-- DO NOT include the diagrams in your output - they will be inserted automatically
-- DO include placeholders like `[Architecture Diagram]` where diagrams should go
-- DO use proper markdown code blocks: ```python, ```bash, ```json, etc.
-- DO include realistic examples based on the actual code
-- DO make the README engaging and easy to follow
-- DO NOT invent features that don't exist in the code
-- DO explain technical concepts clearly
-
-Now generate the comprehensive README.md content:
+Generate the README following these rules strictly:
 """
         
         return prompt
@@ -384,6 +379,98 @@ Now generate the comprehensive README.md content:
         
         return "\n".join(output)
 
+    def _format_detailed_components(self, ladom_data: Dict[str, Any], project_context: Dict[str, Any]) -> str:
+        """Format detailed component information with APIs and interactions."""
+        files = ladom_data.get("files", [])
+        important_files = self._get_important_files(files)
+        
+        output = []
+        output.append("\n## DETAILED COMPONENT BREAKDOWN\n")
+        
+        for file_data in important_files[:12]:  # Top 12 most important files
+            file_path = file_data.get("path", "")
+            file_name = Path(file_path).name
+            relative_path = "/".join(Path(file_path).parts[-3:]) if len(Path(file_path).parts) > 3 else file_path
+            
+            output.append(f"\n### Component: {file_name} (`{relative_path}`)")
+            
+            # Summary
+            summary = file_data.get("summary", "")
+            if summary:
+                output.append(f"\n**Purpose**: {summary[:300]}")
+            
+            # Classes with detailed info
+            classes = file_data.get("classes", [])
+            if classes:
+                output.append(f"\n**Classes ({len(classes)}):**\n")
+                for cls in classes[:3]:
+                    cls_name = cls.get("name", "")
+                    cls_desc = cls.get("description", "")
+                    methods = cls.get("methods", [])
+                    attributes = cls.get("attributes", [])
+                    extends = cls.get("extends", "")
+                    
+                    output.append(f"- **`{cls_name}`**{f' extends {extends}' if extends else ''}: {cls_desc[:150]}")
+                    if attributes:
+                        output.append(f"  - Attributes: {', '.join(a.get('name', '') for a in attributes[:5])}")
+                    if methods:
+                        output.append(f"  - Key Methods:")
+                        for method in methods[:4]:
+                            m_name = method.get("name", "")
+                            m_sig = method.get("signature", "")
+                            m_desc = method.get("description", "")[:80]
+                            if not m_name.startswith("_"):  # Skip private methods
+                                output.append(f"    - `{m_name}{m_sig}`: {m_desc}")
+            
+            # Functions with signatures
+            functions = file_data.get("functions", [])
+            public_funcs = [f for f in functions if not f.get("name", "").startswith("_")]
+            if public_funcs:
+                output.append(f"\n**Public Functions ({len(public_funcs)}):**\n")
+                for func in public_funcs[:6]:
+                    func_name = func.get("name", "")
+                    func_sig = func.get("signature", "")
+                    func_desc = func.get("description", "")
+                    returns = func.get("returns", {}).get("type", "")
+                    params = func.get("parameters", [])
+                    
+                    output.append(f"- **`{func_name}{func_sig}`** → `{returns}`")
+                    if func_desc:
+                        output.append(f"  - {func_desc[:150]}")
+                    if params and len(params) > 0:
+                        output.append(f"  - Parameters: {', '.join(p.get('name', '') for p in params[:4])}")
+            
+            # Dependencies
+            imports = file_data.get("imports", [])
+            if imports:
+                # Handle both dict and string imports
+                external = []
+                internal = []
+                for imp in imports:
+                    if isinstance(imp, dict):
+                        from_module = imp.get("from", "") or imp.get("module", "")
+                        if from_module and not from_module.startswith("."):
+                            external.append(imp)
+                        elif from_module and from_module.startswith("."):
+                            internal.append(imp)
+                    elif isinstance(imp, str):
+                        if not imp.startswith("."):
+                            external.append({"module": imp})
+                        else:
+                            internal.append({"module": imp})
+                
+                external = external[:4]
+                internal = internal[:4]
+                
+                if external:
+                    module_names = [imp.get('module', imp.get('name', str(imp))) for imp in external]
+                    output.append(f"\n**External Dependencies**: {', '.join(module_names)}")
+                if internal:
+                    module_names = [imp.get('module', imp.get('name', str(imp))) for imp in internal]
+                    output.append(f"**Internal Dependencies**: {', '.join(module_names)}")
+        
+        return "\n".join(output)
+
     def _get_important_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Identify the most important files for documentation."""
         scored_files = []
@@ -432,7 +519,7 @@ Now generate the comprehensive README.md content:
         """
         try:
             logger.info("Calling LLM to generate README content...")
-            response = self.llm.generate(prompt)
+            response = self.llm.generate(prompt=prompt)
             
             if not response:
                 logger.error("LLM returned empty response")
@@ -489,20 +576,50 @@ See LICENSE file for details.
         Returns:
             Enhanced README content
         """
+        # Clean up placeholder text that shouldn't be in output
+        placeholders_to_remove = [
+            "yourusername/your-repo",
+            "yourusername",
+            "your-repo",
+            "Project title with relevant badges",
+            "One-line compelling description",
+            "Include real code examples for",
+            "List specific problems developers encounter",
+            "[Sequence Diagram]",
+            "[Placeholder]",
+        ]
+        
+        for placeholder in placeholders_to_remove:
+            if placeholder in content:
+                # Remove lines containing these placeholders
+                lines = content.split('\n')
+                content = '\n'.join([line for line in lines if placeholder not in line])
+        
+        # Remove absolute Windows/Unix paths, keep only relative paths
+        import re
+        # More aggressive Windows absolute path removal including in diagrams
+        content = re.sub(r'[A-Z]:[\\\/][^"\'\s\n\]]+', '', content)  # Windows absolute paths
+        # Fix malformed URLs (missing slash between host:port and path)
+        content = re.sub(r'(https?://[a-zA-Z0-9\.\-]+:\d+)([a-zA-Z])', r'\1/\2', content)
+        content = re.sub(r'(https?://[a-zA-Z0-9\.\-]+)([a-zA-Z][a-zA-Z0-9\-]*)', r'\1/\2', content)
+        
+        # Fix path separator issues (srcindex.js -> src/index.js)
+        content = re.sub(r'\b(src|app|lib|controllers|models|views|services|routes)([a-z])', r'\1/\2', content)
+        
+        # Validate and fix common URL patterns
+        self._validate_and_fix_urls(content)
+        
         # Insert diagrams at appropriate locations
         if "[Architecture Diagram]" in content and diagrams.get("architecture"):
             content = content.replace("[Architecture Diagram]", 
                                     f"\n{diagrams['architecture']}\n")
-        elif "## 4. ARCHITECTURE" in content or "## Architecture" in content:
-            # Insert after architecture header
+        elif "## Architecture" in content:
             arch_diagram = diagrams.get("architecture", "")
             if arch_diagram:
                 content = content.replace(
-                    "## 4. ARCHITECTURE",
-                    f"## 4. ARCHITECTURE\n\n{arch_diagram}\n"
-                ).replace(
                     "## Architecture",
-                    f"## Architecture\n\n{arch_diagram}\n"
+                    f"## Architecture\n\n{arch_diagram}\n",
+                    1  # Only first occurrence
                 )
         
         # Insert folder structure diagram
@@ -520,11 +637,91 @@ See LICENSE file for details.
             content = content.replace("[Data Flow]", 
                                     f"\n{diagrams['data_flow']}\n")
         
+        # Remove any remaining placeholder diagram markers
+        content = re.sub(r'\[[\w\s]+Diagram\]', '', content)
+        content = re.sub(r'\[[\w\s]+placeholder[^\]]*\]', '', content, flags=re.IGNORECASE)
+        
+        # Clean up duplicate sections (simple approach: remove exact duplicate headings)
+        lines = content.split('\n')
+        seen_headings = set()
+        cleaned_lines = []
+        skip_until_next_section = False
+        
+        for line in lines:
+            if line.startswith('##'):
+                if line in seen_headings:
+                    skip_until_next_section = True
+                    continue
+                else:
+                    seen_headings.add(line)
+                    skip_until_next_section = False
+            
+            if not skip_until_next_section:
+                cleaned_lines.append(line)
+        
+        content = '\n'.join(cleaned_lines)
+        
+        # Run validation gate before finalizing
+        validation_issues = self._validate_output(content)
+        if validation_issues:
+            logger.warning(f"README validation found {len(validation_issues)} issues:")
+            for issue in validation_issues[:10]:  # Log first 10
+                logger.warning(f"  - {issue}")
+        
         # Add metadata footer
         footer = f"\n\n---\n\n*This README was automatically generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n"
         content += footer
         
         return content
+    
+    def _validate_and_fix_urls(self, content: str) -> str:
+        """Validate URLs in content and log issues."""
+        import re
+        # Find potential malformed URLs
+        malformed = re.findall(r'https?://[^/\s]+[a-zA-Z]', content)
+        if malformed:
+            logger.warning(f"Potential malformed URLs detected: {malformed[:5]}")
+        return content
+    
+    def _validate_output(self, content: str) -> List[str]:
+        """
+        Validate generated README for common issues.
+        
+        Returns:
+            List of validation issues found
+        """
+        import re
+        issues = []
+        
+        # Check for absolute paths
+        abs_windows = re.findall(r'[A-Z]:[\\\/][^\s\n]+', content)
+        if abs_windows:
+            issues.append(f"Contains {len(abs_windows)} absolute Windows paths")
+        
+        # Check for malformed URLs
+        malformed_urls = re.findall(r'https?://[^/\s:]+:\d+[a-zA-Z]', content)
+        if malformed_urls:
+            issues.append(f"Contains {len(malformed_urls)} malformed URLs (missing slash)")
+        
+        # Check for placeholder text
+        placeholders = ["yourusername", "your-repo", "your-project"]
+        for placeholder in placeholders:
+            if placeholder in content.lower():
+                issues.append(f"Contains placeholder text: {placeholder}")
+        
+        # Check for missing path separators
+        bad_paths = re.findall(r'\b(src|app|lib)(index|main|app|server|routes|models)', content)
+        if bad_paths:
+            issues.append(f"Contains {len(bad_paths)} paths with missing separators")
+        
+        # Check for inconsistent endpoint formats (if API docs present)
+        if "curl" in content.lower() or "endpoint" in content.lower():
+            # Look for endpoints without leading slash
+            bad_endpoints = re.findall(r'`(GET|POST|PUT|DELETE|PATCH)\s+([a-z])', content)
+            if bad_endpoints:
+                issues.append(f"Contains {len(bad_endpoints)} endpoints without leading slash")
+        
+        return issues
 
     def _save_readme(self, content: str, output_path: str) -> None:
         """
@@ -546,30 +743,3 @@ See LICENSE file for details.
         except Exception as e:
             logger.error(f"Error saving README: {e}")
             raise
-
-    def generate_html(self, markdown_path: str, html_path: str) -> None:
-        """
-        Generate HTML version of README.
-        
-        Args:
-            markdown_path: Path to markdown file
-            html_path: Path for HTML output
-        """
-        try:
-            with open(markdown_path, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            
-            # Use HTMLRenderer to convert
-            renderer = HTMLRenderer()
-            html_content = renderer.render_markdown_to_html(
-                markdown_content,
-                title="Project README"
-            )
-            
-            with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            
-            logger.info(f"HTML README saved to: {html_path}")
-            
-        except Exception as e:
-            logger.error(f"Error generating HTML README: {e}")

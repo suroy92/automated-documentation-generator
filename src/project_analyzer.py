@@ -108,10 +108,14 @@ class ProjectAnalyzer:
             patterns_found.append("Clean Architecture")
             confidence["Clean Architecture"] = 0.8
         
-        # Microservices indicators
-        if any(d in ["services", "api"] for d in all_dirs) and len([f for f in self.files if "main" in f.get("path", "").lower()]) > 1:
+        # Microservices indicators (require multiple deployment units)
+        service_dirs = [d for d in all_dirs if "service" in d.lower()]
+        docker_files = [f for f in self.files if "dockerfile" in f.get("path", "").lower() or "docker-compose" in f.get("path", "").lower()]
+        has_multiple_mains = len([f for f in self.files if any(name in f.get("path", "").lower() for name in ["main", "app", "server"])]) > 2
+        
+        if len(service_dirs) > 1 or (len(docker_files) > 1 and has_multiple_mains):
             patterns_found.append("Microservices")
-            confidence["Microservices"] = 0.6
+            confidence["Microservices"] = 0.7
         
         # Modular monolith
         if len(all_dirs) > 5 and any(d in ["modules", "components"] for d in all_dirs):
@@ -290,13 +294,27 @@ class ProjectAnalyzer:
         internal_deps: Dict[str, Set[str]] = defaultdict(set)
         stdlib_imports: Set[str] = set()
         
-        # Python standard library modules (common ones)
+        # Python standard library modules (comprehensive list)
         stdlib_modules = {
+            # Core modules
             "os", "sys", "json", "logging", "pathlib", "typing", "collections",
             "itertools", "functools", "re", "datetime", "time", "math", "random",
             "ast", "io", "pickle", "csv", "unittest", "argparse", "configparser",
             "subprocess", "threading", "multiprocessing", "asyncio", "concurrent",
-            "copy", "enum", "abc", "dataclasses", "warnings", "traceback"
+            "copy", "enum", "abc", "dataclasses", "warnings", "traceback", "inspect",
+            # Additional common stdlib
+            "string", "operator", "types", "weakref", "heapq", "bisect", "array",
+            "struct", "codecs", "textwrap", "unicodedata", "stringprep", "difflib",
+            "hashlib", "hmac", "secrets", "uuid", "html", "xml", "email", "mimetypes",
+            "base64", "binascii", "quopri", "uu", "bz2", "gzip", "lzma", "zipfile",
+            "tarfile", "sqlite3", "dbm", "marshal", "shelve", "zlib", "gzip",
+            "http", "urllib", "socket", "ssl", "select", "selectors", "signal",
+            "mmap", "ctypes", "platform", "errno", "locale", "gettext", "decimal",
+            "fractions", "numbers", "cmath", "statistics", "pprint", "reprlib",
+            "contextvars", "contextlib", "importlib", "pkgutil", "modulefinder",
+            "runpy", "parser", "symbol", "token", "keyword", "tokenize", "tabnanny",
+            "pyclbr", "py_compile", "compileall", "dis", "pickletools", "zipapp",
+            "venv", "ensurepip", "typing_extensions"
         }
         
         for file_data in self.files:
@@ -304,18 +322,27 @@ class ProjectAnalyzer:
             imports = file_data.get("imports", [])
             
             for imp in imports:
-                imp_str = str(imp)
+                # Handle both dict and string formats
+                if isinstance(imp, dict):
+                    imp_str = imp.get('module', imp.get('from', imp.get('name', '')))
+                else:
+                    imp_str = str(imp)
+                
+                if not imp_str:
+                    continue
+                    
                 base_module = imp_str.split(".")[0] if "." in imp_str else imp_str
                 
                 # Categorize import
-                if base_module in stdlib_modules:
+                if base_module.lower() in stdlib_modules:
                     stdlib_imports.add(base_module)
-                elif imp_str.startswith(".") or imp_str.startswith("src."):
+                elif imp_str.startswith(".") or imp_str.startswith("src.") or "/" in imp_str:
                     # Internal/relative import
                     internal_deps[file_path].add(imp_str)
                 else:
-                    # External third-party
-                    external_deps.add(base_module)
+                    # External third-party (exclude stdlib)
+                    if base_module and base_module.lower() not in stdlib_modules:
+                        external_deps.add(base_module)
         
         return {
             "external_packages": sorted(external_deps),

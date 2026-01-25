@@ -31,32 +31,56 @@ class DiagramGenerator:
         Returns:
             Mermaid diagram as string
         """
+        from pathlib import Path
+        
         arch_info = project_context.get("architecture", {})
         entry_points = project_context.get("entry_points", [])
         dependencies = project_context.get("dependencies", {})
+        tech_stack = project_context.get("technology_stack", {})
         
         diagram = ["```mermaid", "graph TD"]
         
-        # Add entry points
+        # Add entry points with relative paths
         if entry_points:
             for i, ep in enumerate(entry_points[:3]):  # Limit to 3 for clarity
                 ep_type = ep.get("type", "main")
-                ep_file = ep.get("file", "").split("/")[-1]
+                ep_file_full = ep.get("file", "")
+                # Convert to relative path (last 2-3 segments)
+                ep_parts = Path(ep_file_full).parts
+                ep_file = "/".join(ep_parts[-2:]) if len(ep_parts) > 1 else ep_parts[-1]
                 diagram.append(f"    Entry{i}[\"{ep_file}<br/>({ep_type})\"]")
         
         # Add main components based on architecture
         arch_pattern = arch_info.get("primary_pattern", "Custom")
         
+        # Check if project has views/templates (detect frontend)
+        dir_structure = project_context.get("directory_structure", {})
+        all_dirs = dir_structure.get("directories", [])
+        has_views = any("view" in str(d).lower() or "template" in str(d).lower() or "static" in str(d).lower() for d in all_dirs)
+        
+        # Check if this is an API-only project
+        is_api_only = any(ep.get("type") == "api" for ep in entry_points) and not has_views
+        
         if arch_pattern == "MVC":
-            diagram.extend([
-                "    Model[\"📊 Model Layer\"]",
-                "    View[\"👁️ View Layer\"]",
-                "    Controller[\"🎮 Controller Layer\"]",
-                "    Entry0 --> Controller",
-                "    Controller --> Model",
-                "    Controller --> View",
-                "    Model --> View"
-            ])
+            if is_api_only:
+                # API-only: Model-Controller pattern (no View)
+                diagram.extend([
+                    "    Model[\"📊 Model Layer\"]",
+                    "    Controller[\"🎮 Controller Layer\"]",
+                    "    Entry0 --> Controller",
+                    "    Controller --> Model"
+                ])
+            else:
+                # Full MVC with View
+                diagram.extend([
+                    "    Model[\"📊 Model Layer\"]",
+                    "    View[\"👁️ View Layer\"]",
+                    "    Controller[\"🎮 Controller Layer\"]",
+                    "    Entry0 --> Controller",
+                    "    Controller --> Model",
+                    "    Controller --> View",
+                    "    Model --> View"
+                ])
         elif arch_pattern == "Layered":
             diagram.extend([
                 "    Presentation[\"🖥️ Presentation Layer\"]",
@@ -80,15 +104,7 @@ class DiagramGenerator:
                 "    Core --> Data"
             ])
         
-        # Add external dependencies
-        external_deps = dependencies.get("external_packages", [])
-        if external_deps and len(external_deps) > 0:
-            # Show top 3 external dependencies
-            diagram.append("    External[\"📦 External Libraries<br/>")
-            for dep in external_deps[:3]:
-                diagram[-1] += f"{dep}<br/>"
-            diagram[-1] += "\"]"
-            diagram.append("    Core --> External")
+        # Don't add External Libraries blob - it's noisy and not useful in architecture diagram
         
         diagram.append("```")
         return "\n".join(diagram)

@@ -22,29 +22,38 @@ exclude_dirs:
 
 # Output configuration
 output:
-  directory: Documentation
-  format: markdown
-  include_toc: true
-
+  directory: Documentation  # Output directory for generated README
+  filename: README.md       # Always generates README.md
+  
 # README Generation Configuration
 readme:
-  enabled: true
-  generate_diagrams: true  # Generate Mermaid diagrams
-  generate_examples: true  # Extract and include code examples
-  max_diagram_nodes: 15  # Maximum nodes in dependency diagrams
-  max_code_examples: 5  # Maximum code examples to extract
-  include_statistics: true  # Include project statistics
-  include_architecture: true  # Include architecture analysis
-  include_setup_guide: true  # Include installation/setup instructions
-  include_usage_examples: true  # Include usage examples
+  # Documentation focus and detail level
+  target_audience: "developers"  # Primary audience: developers and architects
+  detail_level: "comprehensive"   # comprehensive | detailed | concise
+  
+  # Content toggles
+  include_diagrams: true          # Generate Mermaid architecture diagrams
+  include_code_examples: true     # Extract and include real code examples
+  include_api_docs: true          # Include detailed API documentation
+  include_architecture: true      # Include architecture analysis and patterns
+  include_workflows: true         # Include data flow and sequence diagrams
+  include_setup_guide: true       # Include installation/setup instructions
+  include_troubleshooting: true   # Include troubleshooting section
+  include_dev_guide: true         # Include development/contribution guide
+  
+  # Complexity controls
+  max_diagram_nodes: 15           # Maximum nodes in dependency diagrams
+  max_code_examples: 8            # Maximum code examples to extract
+  max_components_detailed: 12     # Number of components to document in detail
+  max_functions_per_component: 6  # Public functions to document per component
   
 # LLM Configuration
 llm:
   provider: ollama
-  model: qwen2.5-coder:14b
+  model: qwen2.5-coder:7b
   base_url: http://localhost:11434
   temperature: 0.2
-  timeout: 400  # Increased to 6.6 minutes for 14B model (was 180s)
+  timeout: 300  # Reduced for faster 7b model
   max_retries: 5
   retry_delay: 10  # Increased from 5s to 10s between retries
   rate_limit_calls_per_minute: 12  # Reduced to give more time per call
