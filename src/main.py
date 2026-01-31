@@ -155,27 +155,35 @@ def scan_and_analyze(project_path: str, config: ConfigLoader,
     return aggregated_ladom
 
 
-def generate_readme(aggregated_ladom: Dict[str, Any], output_dir: str, project_path: str, llm_client: LLM) -> str:
+def generate_readme(aggregated_ladom: Dict[str, Any], output_dir: str, project_path: str, llm_client: LLM) -> Tuple[str, bool]:
     """
     Generate comprehensive README documentation.
-    
+
     Args:
         aggregated_ladom: Aggregated LADOM data
         output_dir: Output directory
         project_path: Source project path
         llm_client: LLM client
-        
+
     Returns:
-        Path to generated README
+        Tuple of (Path to generated README, validation_passed)
+
+    Raises:
+        ValueError: If validation fails
     """
     readme_path = os.path.join(output_dir, "README.md")
-    
+
     logger.info("Generating comprehensive README documentation...")
     readme_gen = ReadmeGenerator(llm_client)
-    readme_gen.generate(aggregated_ladom, project_path, readme_path)
-    
-    logger.info(f"✓ README generated: {readme_path}")
-    return readme_path
+
+    try:
+        validation_result = readme_gen.generate(aggregated_ladom, project_path, readme_path, validate=True)
+        logger.info(f"✓ README generated: {readme_path}")
+        return readme_path, validation_result.passed
+    except ValueError as e:
+        # Validation failed - README was saved but has errors
+        logger.error(f"README generation completed but validation failed: {e}")
+        raise
 
 
 def main():
@@ -234,25 +242,42 @@ def main():
     # Generate comprehensive README
     print("\nGenerating comprehensive README documentation...")
     print("This may take a few minutes depending on project size...")
-    
-    readme_path = generate_readme(aggregated_ladom, out, project_path, llm_client)
 
-    print("\n" + "=" * 70)
-    print("  ✓ Documentation Generated Successfully!")
-    print("=" * 70)
-    print(f"\n  📄 README: {readme_path}")
-    
-    # Statistics
-    stats = cache.get_stats()
-    if stats["enabled"]:
-        print(f"\n  Cache Statistics:")
-        print(f"    - Total entries: {stats['total_entries']}")
-        print(f"    - Cache file: {stats['cache_file']}")
+    try:
+        readme_path, validation_passed = generate_readme(aggregated_ladom, out, project_path, llm_client)
 
-    rate_stats = rate_limiter.get_stats()
-    print(f"\n  LLM calls made: {rate_stats['total_calls']}")
-    
-    print("\n" + "=" * 70)
+        print("\n" + "=" * 70)
+        print("  ✓ Documentation Generated Successfully!")
+        print("=" * 70)
+        print(f"\n  📄 README: {readme_path}")
+
+        if not validation_passed:
+            print("\n  ⚠️  WARNING: README generated with validation warnings")
+            print("  Check the log for details")
+
+        # Statistics
+        stats = cache.get_stats()
+        if stats["enabled"]:
+            print(f"\n  Cache Statistics:")
+            print(f"    - Total entries: {stats['total_entries']}")
+            print(f"    - Cache file: {stats['cache_file']}")
+
+        rate_stats = rate_limiter.get_stats()
+        print(f"\n  LLM calls made: {rate_stats['total_calls']}")
+
+        print("\n" + "=" * 70)
+
+    except ValueError as e:
+        # Validation failed with errors
+        print("\n" + "=" * 70)
+        print("  ✗ Documentation Generation FAILED")
+        print("=" * 70)
+        print(f"\n  Error: {e}")
+        print("\n  The README was generated but contains validation errors.")
+        print("  Please check the log output above for details.")
+        print("\n" + "=" * 70)
+        logger.error("Exiting with status code 1 due to validation failures")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

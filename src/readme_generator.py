@@ -24,6 +24,8 @@ from .providers.ollama_client import LLM
 from .project_analyzer import ProjectAnalyzer
 from .utils.diagram_generator import DiagramGenerator
 from .utils.example_extractor import ExampleExtractor
+from .sanitizer import Sanitizer
+from .validator import ReadmeValidator, ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,60 +48,109 @@ class ReadmeGenerator:
         self.llm = llm_client
 
     def generate(
-        self, 
-        ladom_data: Dict[str, Any], 
+        self,
+        ladom_data: Dict[str, Any],
         project_path: str,
-        output_path: str
-    ) -> None:
+        output_path: str,
+        validate: bool = True
+    ) -> ValidationResult:
         """
         Generate comprehensive README documentation.
-        
+
         Args:
             ladom_data: Aggregated LADOM data from project analysis
             project_path: Root path of the analyzed project
             output_path: Path where README.md should be saved
+            validate: Whether to run validation (default: True)
+
+        Returns:
+            ValidationResult with validation status
+
+        Raises:
+            ValueError: If validation fails and validate=True
         """
         logger.info("Starting comprehensive README generation...")
-        
+
+        # Step 0: Sanitize input facts (prevent issues at source)
+        logger.info("Sanitizing input data...")
+        sanitizer = Sanitizer(project_root=project_path)
+        sanitize_result = sanitizer.sanitize_facts(ladom_data)
+        ladom_data = sanitize_result.sanitized_data
+
+        if sanitize_result.issues_found:
+            logger.warning(f"Found {len(sanitize_result.issues_found)} issues in input data")
+            for issue in sanitize_result.issues_found[:5]:
+                logger.warning(f"  - {issue}")
+
         # Step 1: Perform comprehensive project analysis
         logger.info("Analyzing project structure and relationships...")
         project_analyzer = ProjectAnalyzer(ladom_data, project_path)
         project_context = project_analyzer.analyze()
-        
+
         # Step 2: Generate diagrams
         logger.info("Generating architecture diagrams...")
         diagrams = DiagramGenerator.generate_all_diagrams(project_context, ladom_data)
-        
+
         # Step 3: Extract examples
         logger.info("Extracting code examples...")
         example_extractor = ExampleExtractor(ladom_data, project_path)
         examples = example_extractor.extract_all_examples()
-        
+
         # Step 4: Build comprehensive prompt
         logger.info("Building LLM prompt with rich context...")
         prompt = self._build_comprehensive_prompt(
-            ladom_data, 
-            project_context, 
-            diagrams, 
+            ladom_data,
+            project_context,
+            diagrams,
             examples
         )
-        
+
         # Step 5: Generate README content using LLM
         logger.info("Generating README content with LLM...")
         readme_content = self._generate_with_llm(prompt)
-        
+
         # Step 6: Post-process and enhance
         logger.info("Post-processing README content...")
         final_content = self._post_process_content(
-            readme_content, 
-            project_context, 
-            diagrams, 
+            readme_content,
+            project_context,
+            diagrams,
             examples
         )
-        
-        # Step 7: Save to file
+
+        # Step 6.5: Final sanitization of markdown output
+        logger.info("Final sanitization of markdown...")
+        markdown_sanitize_result = sanitizer.sanitize_markdown(final_content)
+        final_content = markdown_sanitize_result.sanitized_data
+
+        if markdown_sanitize_result.issues_found:
+            logger.warning(f"Found {len(markdown_sanitize_result.issues_found)} issues in generated markdown")
+
+        # Step 7: Validate README (if enabled)
+        validation_result = ValidationResult(passed=True)
+        if validate:
+            logger.info("Validating generated README...")
+            validator = ReadmeValidator(strict=False)
+            validation_result = validator.validate(final_content, ladom_data)
+
+            if not validation_result.passed:
+                logger.error("README validation FAILED!")
+                logger.error(validation_result.get_detailed_report())
+                # Save the file even if validation fails (for debugging)
+                self._save_readme(final_content, output_path)
+                logger.info(f"README saved to {output_path} (with validation errors)")
+                raise ValueError(f"README validation failed with {validation_result.error_count} errors")
+            else:
+                logger.info(f"✓ README validation PASSED ({validation_result.warning_count} warnings)")
+                if validation_result.warnings:
+                    for warning in validation_result.warnings[:10]:
+                        logger.warning(f"  {warning}")
+
+        # Step 8: Save to file
         self._save_readme(final_content, output_path)
         logger.info(f"✓ README generated: {output_path}")
+
+        return validation_result
 
     def _build_comprehensive_prompt(
         self,
