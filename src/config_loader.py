@@ -123,12 +123,12 @@ class ConfigLoader:
         },
         'cache': {
             'enabled': True,
-            'file': '.docstring_cache.json'
+            'file': '.cache/.docstring_cache.json'
         },
         'logging': {
             'level': 'INFO',
             'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            'file': 'docgen.log'
+            'file': '.logs/docgen.log'
         },
         'processing': {
             'parallel': True,
@@ -301,7 +301,7 @@ class ConfigLoader:
     
     def get_cache_file(self) -> str:
         """Get cache file path."""
-        return self.config.get('cache', {}).get('file', '.docstring_cache.json')
+        return self.config.get('cache', {}).get('file', '.cache/.docstring_cache.json')
     
     def get_log_level(self) -> str:
         """Get logging level."""
@@ -313,7 +313,7 @@ class ConfigLoader:
     
     def get_log_file(self) -> str:
         """Get log file path."""
-        return self.config.get('logging', {}).get('file', 'docgen.log')
+        return self.config.get('logging', {}).get('file', '.logs/docgen.log')
     
     def is_parallel_processing(self) -> bool:
         """Check if parallel processing is enabled."""

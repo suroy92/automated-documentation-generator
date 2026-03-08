@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class DocstringCache:
     """Manages caching of generated docstrings with thread-safe operations."""
 
-    def __init__(self, cache_file: str = '.docstring_cache.json', enabled: bool = True):
+    def __init__(self, cache_file: str = '.cache/.docstring_cache.json', enabled: bool = True):
         """
         Initialize the cache manager.
 

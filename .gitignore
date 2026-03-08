@@ -55,13 +55,10 @@ htmlcov/
 .mypy_cache/
 .hypothesis/
 
-# Documentation output (generated)
-Documentation/
-
-# Cache / logs
-.docstring_cache.json
+# Cache / logs (new structure)
+.cache/
+.logs/
 *.log
-docgen.log
 
 # Jupyter
 .ipynb_checkpoints
