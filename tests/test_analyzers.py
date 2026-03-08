@@ -428,3 +428,49 @@ interface ICalc {
         mnames = {m['name'] for m in calc['methods']}
         assert 'constructor' in mnames
         assert 'multiply' in mnames
+
+    @pytest.fixture
+    def temp_ts_arrow_file(self):
+        """Create a temporary TypeScript file with various arrow function patterns."""
+        content = '''
+// Expression-body arrow (no braces)
+const double = (x: number): number => x * 2;
+
+// Async block-body with generic return type
+const fetchUser = async (id: number): Promise<string> => {
+    return "user";
+}
+
+// Exported expression-body arrow
+export const greet = (name: string) => "Hello " + name;
+
+// Async expression-body
+const triple = async (x: number): Promise<number> => x * 3;
+'''
+        fd, path = tempfile.mkstemp(suffix='.ts')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(content)
+        yield path
+        os.remove(path)
+
+    def test_arrow_function_patterns(self, mock_client, temp_ts_arrow_file):
+        """Test that various arrow function patterns are extracted."""
+        analyzer = TypeScriptAnalyzer(client=mock_client)
+        result = analyzer.analyze(temp_ts_arrow_file)
+
+        assert result is not None
+        file_data = result['files'][0]
+        funcs = file_data['functions']
+        names = {f['name'] for f in funcs}
+
+        # Expression-body arrow without export
+        assert 'double' in names
+
+        # Async block-body with generic return type (Promise<string>)
+        assert 'fetchUser' in names
+
+        # Exported expression-body arrow
+        assert 'greet' in names
+
+        # Async expression-body with generic return type
+        assert 'triple' in names

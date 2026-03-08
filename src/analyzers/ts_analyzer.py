@@ -490,9 +490,10 @@ class TypeScriptAnalyzer(BaseAnalyzer):
             )
             file_entry["functions"].append(func_sym)
 
-        # Extract arrow functions: const name = (params): returnType => {
+        # Extract block-body arrow functions: const name = (params): returnType => {
+        # Return type uses (?:[^=\n]|=(?!>))+ to allow generics like Promise<T>
         arrow_func_pattern = re.compile(
-            r'(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*([^=>\n]+?))?\s*=>\s*\{',
+            r'(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*((?:[^=\n]|=(?!>))+?))?\s*=>\s*\{',
             re.MULTILINE
         )
 
@@ -509,6 +510,29 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                 name, params_str, return_type, snippet, file_path, start_line, end_line
             )
             file_entry["functions"].append(func_sym)
+
+        # Extract expression-body arrow functions: const name = (params): returnType => expr
+        arrow_expr_pattern = re.compile(
+            r'(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*((?:[^=\n]|=(?!>))+?))?\s*=>[ \t]*(?!\{)([^\n;]+)',
+            re.MULTILINE
+        )
+
+        arrow_func_names = {f['name'] for f in file_entry["functions"]}
+        for match in arrow_expr_pattern.finditer(source):
+            name = match.group(1)
+            if name in arrow_func_names:
+                continue  # already captured as block-body
+            params_str = match.group(2)
+            return_type = match.group(3).strip() if match.group(3) else ""
+            start_line = source.count('\n', 0, match.start()) + 1
+            snippet = match.group(0)
+            end_line = start_line
+
+            func_sym = self._build_function_symbol(
+                name, params_str, return_type, snippet, file_path, start_line, end_line
+            )
+            file_entry["functions"].append(func_sym)
+            arrow_func_names.add(name)
         
         # Extract classes
         class_pattern = re.compile(
