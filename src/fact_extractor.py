@@ -217,6 +217,10 @@ class FactExtractor:
         if action_yml.exists() or action_yaml.exists():
             indicators[ProjectType.EXTENSION] += 3  # GitHub Actions are a type of extension
 
+        # Check filesystem directly for Terraform files (.tf/.hcl not in LADOM)
+        if any(self.project_path.rglob("*.tf")) or any(self.project_path.rglob("*.hcl")):
+            indicators[ProjectType.IAC] += 5
+
         # Return type with highest score
         if indicators:
             return max(indicators, key=indicators.get)
@@ -295,6 +299,11 @@ class FactExtractor:
             elif ext in [".php"]:
                 language_counts["PHP"] += 1
 
+        # Detect HCL/Terraform from filesystem (not processed by language analyzers)
+        hcl_count = sum(1 for _ in self.project_path.rglob("*.tf")) + sum(1 for _ in self.project_path.rglob("*.hcl"))
+        if hcl_count > 0:
+            language_counts["HCL"] += hcl_count
+
         languages = []
         if language_counts:
             # Primary language is the one with most files
@@ -312,34 +321,49 @@ class FactExtractor:
     def _extract_entry_points(self, files: List[Dict]) -> List[EntryPoint]:
         """Extract entry points from files."""
         entry_points = []
+        seen: Set[str] = set()
+
+        MAIN_FILENAMES = {"main.py", "app.py", "index.js", "index.ts", "server.js", "server.ts", "server.py"}
+        CLI_FILENAMES = {"cli.py", "cli.js", "__main__.py"}
+        ENTRY_FUNC_NAMES = {"main", "serve", "run", "start"}
 
         for file_data in files:
             file_path = file_data.get("path", "")
             filename = Path(file_path).name.lower()
 
-            # Main entry points
-            if filename in ["main.py", "app.py", "index.js", "index.ts", "server.js", "server.ts"]:
+            if filename in MAIN_FILENAMES:
                 entry_points.append(EntryPoint(
                     file=file_path,
                     type="main",
                     description=f"Main entry point: {filename}"
                 ))
-
-            # CLI entry points
-            elif filename in ["cli.py", "cli.js", "__main__.py"]:
+                seen.add(file_path)
+            elif filename in CLI_FILENAMES:
                 entry_points.append(EntryPoint(
                     file=file_path,
                     type="cli",
                     description=f"CLI entry point: {filename}"
                 ))
-
-            # API entry points
+                seen.add(file_path)
             elif "api" in filename or "routes" in filename:
                 entry_points.append(EntryPoint(
                     file=file_path,
                     type="api",
                     description=f"API entry point: {filename}"
                 ))
+                seen.add(file_path)
+
+            # Detect by top-level entry-point functions (e.g. main(), serve())
+            if file_path not in seen:
+                top_level_funcs = {f.get("name", "") for f in file_data.get("functions", [])}
+                matched = top_level_funcs & ENTRY_FUNC_NAMES
+                if matched:
+                    entry_points.append(EntryPoint(
+                        file=file_path,
+                        type="main",
+                        description=f"Entry point script ({', '.join(sorted(matched))})"
+                    ))
+                    seen.add(file_path)
 
         return entry_points
 

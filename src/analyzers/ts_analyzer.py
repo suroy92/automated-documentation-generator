@@ -101,6 +101,25 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                 class_obj = self._process_class_ast(node, source, file_path)
                 if class_obj:
                     file_entry["classes"].append(class_obj)
+            elif node.type == 'interface_declaration':
+                class_obj = self._process_interface_ast(node, source, file_path)
+                if class_obj:
+                    file_entry["classes"].append(class_obj)
+            elif node.type == 'lexical_declaration':
+                # const name = (...) => { ... }
+                for child in node.children:
+                    if child.type == 'variable_declarator':
+                        decl_name = None
+                        arrow_node = None
+                        for subchild in child.children:
+                            if subchild.type == 'identifier':
+                                decl_name = self._get_node_text(subchild, source)
+                            elif subchild.type == 'arrow_function':
+                                arrow_node = subchild
+                        if decl_name and arrow_node:
+                            func_sym = self._process_arrow_function_ast(arrow_node, source, file_path, decl_name)
+                            if func_sym:
+                                file_entry["functions"].append(func_sym)
             elif node.type == 'export_statement':
                 # Handle exported functions/classes
                 for child in node.children:
@@ -112,6 +131,20 @@ class TypeScriptAnalyzer(BaseAnalyzer):
                         class_obj = self._process_class_ast(child, source, file_path)
                         if class_obj:
                             file_entry["classes"].append(class_obj)
+                    elif child.type == 'lexical_declaration':
+                        for subchild in child.children:
+                            if subchild.type == 'variable_declarator':
+                                decl_name = None
+                                arrow_node = None
+                                for grandchild in subchild.children:
+                                    if grandchild.type == 'identifier':
+                                        decl_name = self._get_node_text(grandchild, source)
+                                    elif grandchild.type == 'arrow_function':
+                                        arrow_node = grandchild
+                                if decl_name and arrow_node:
+                                    func_sym = self._process_arrow_function_ast(arrow_node, source, file_path, decl_name)
+                                    if func_sym:
+                                        file_entry["functions"].append(func_sym)
         
         return {"files": [file_entry]}
     
@@ -292,6 +325,76 @@ class TypeScriptAnalyzer(BaseAnalyzer):
         
         return methods
     
+    def _process_arrow_function_ast(self, node, source: str, file_path: str, name: str) -> Optional[Dict[str, Any]]:
+        """Process an arrow_function AST node with an externally-supplied name."""
+        params_list = []
+        return_type = ""
+
+        for child in node.children:
+            if child.type == 'formal_parameters':
+                params_list = self._extract_params_ast(child, source)
+            elif child.type == 'type_annotation':
+                return_type = self._get_node_text(child, source).lstrip(':').strip()
+
+        start_line = node.start_point[0] + 1
+        end_line = node.end_point[0] + 1
+        snippet = self._get_node_text(node, source)
+
+        params_str = ', '.join([
+            f"{p['name']}{('?' if p.get('optional') else '')}: {p.get('type', 'any')}"
+            for p in params_list
+        ])
+
+        context = f"function {name}({params_str})"
+        docstring, details = self.generate_doc(snippet, node_name=name, context=context)
+
+        params = self._merge_params_ast(params_list, details.get("params") or [])
+        summary = (details.get("summary") or "").strip()
+        examples = details.get("examples") or []
+        dret = details.get("returns") or {}
+        returns = {
+            "type": return_type or (dret.get("type") or "").strip(),
+            "description": (dret.get("desc") or dret.get("description") or "").strip(),
+        }
+
+        return {
+            "name": name,
+            "signature": f"({params_str})" + (f" => {return_type}" if return_type else ""),
+            "description": summary,
+            "parameters": params,
+            "returns": returns,
+            "throws": details.get("throws") or [],
+            "examples": examples,
+            "performance": details.get("performance") or {"time_complexity": "", "space_complexity": "", "notes": ""},
+            "error_handling": details.get("error_handling") or {"strategy": "", "recovery": "", "logging": ""},
+            "lines": {"start": start_line, "end": end_line},
+            "file_path": file_path,
+            "language_hint": "typescript",
+        }
+
+    def _process_interface_ast(self, node, source: str, file_path: str) -> Optional[Dict[str, Any]]:
+        """Process an interface_declaration AST node as a class-like entry."""
+        interface_name = None
+        start_line = node.start_point[0] + 1
+        end_line = node.end_point[0] + 1
+
+        for child in node.children:
+            if child.type == 'type_identifier':
+                interface_name = self._get_node_text(child, source)
+
+        if not interface_name:
+            return None
+
+        return {
+            "name": interface_name,
+            "description": "",
+            "extends": "",
+            "methods": [],
+            "lines": {"start": start_line, "end": end_line},
+            "file_path": file_path,
+            "language_hint": "typescript",
+        }
+
     def _extract_params_ast(self, params_node, source: str) -> List[Dict[str, Any]]:
         """Extract parameters from formal_parameters node."""
         params = []
@@ -366,22 +469,42 @@ class TypeScriptAnalyzer(BaseAnalyzer):
             "classes": [],
         }
         
-        # Extract functions
+        # Extract regular functions
         func_pattern = re.compile(
             r'(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)(?:\s*:\s*([^{]+))?\s*\{',
             re.MULTILINE
         )
-        
+
         for match in func_pattern.finditer(source):
             name = match.group(1)
             params_str = match.group(2)
             return_type = match.group(3).strip() if match.group(3) else ""
             start_line = source.count('\n', 0, match.start()) + 1
-            
+
             # Extract function body
             snippet = self._extract_brace_block(source, match.end() - 1)
             end_line = start_line + snippet.count('\n')
-            
+
+            func_sym = self._build_function_symbol(
+                name, params_str, return_type, snippet, file_path, start_line, end_line
+            )
+            file_entry["functions"].append(func_sym)
+
+        # Extract arrow functions: const name = (params): returnType => {
+        arrow_func_pattern = re.compile(
+            r'(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)(?:\s*:\s*([^=>\n]+?))?\s*=>\s*\{',
+            re.MULTILINE
+        )
+
+        for match in arrow_func_pattern.finditer(source):
+            name = match.group(1)
+            params_str = match.group(2)
+            return_type = match.group(3).strip() if match.group(3) else ""
+            start_line = source.count('\n', 0, match.start()) + 1
+
+            snippet = self._extract_brace_block(source, match.end() - 1)
+            end_line = start_line + snippet.count('\n')
+
             func_sym = self._build_function_symbol(
                 name, params_str, return_type, snippet, file_path, start_line, end_line
             )
